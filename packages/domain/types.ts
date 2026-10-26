@@ -1,0 +1,14 @@
+export type Role = 'owner' | 'operator' | 'viewer';
+export type JobState = 'QUEUED' | 'SUBMITTING' | 'ACCEPTED' | 'SUCCEEDED' | 'FAILED_CONFIRMED' | 'UNKNOWN' | 'BLOCKED';
+export interface Workspace { id: string; name: string; account_limit: number; daily_budget_cents: number; outstanding_budget_cents: number; per_order_cents: number; per_batch_cents: number; budget_version: number; timezone: string }
+export interface Account { id: string; workspace_id: string; nickname: string; handle: string; account_group: string; color: string; status: 'active' | 'expired'; auth_epoch: number; followers: number; likes: number; posts: number; synced_at: string; provider: 'demo' }
+export interface Asset { id: string; workspace_id: string; title: string; theme: string; filename: string | null; mime: string | null; bytes: number; storage_key: string | null; content_hash: string; created_at: string }
+export interface Work { id: string; workspace_id: string; account_id: string; asset_id: string; title: string; visibility: string; external_id: string; plays: number; likes: number; comments: number; created_at: string; nickname?: string; theme?: string }
+export interface PublishJob { id: string; workspace_id: string; batch_id: string; account_id: string; asset_id: string; title: string; auth_epoch: number; state: JobState; scenario: string; external_id: string | null; error: string | null; attempts: number; created_at: string; updated_at: string; nickname?: string }
+export interface PublishBatch { id: string; title: string; created_at: string; jobs: PublishJob[] }
+export interface PromotionOrder { id: string; workspace_id: string; batch_id: string; work_id: string; account_id: string; auth_epoch: number; budget_cents: number; confirmation_day: string; goal: string; hours: number; create_state: string; payment_state: string; delivery_state: string; actual_cents: number | null; external_id: string | null; scenario: string; created_at: string; updated_at: string; title?: string; nickname?: string; theme?: string }
+export interface MetricPoint { account_id: string; day: string; plays: number; followers: number; likes: number }
+export interface Audit { id: string; action: string; detail: string; created_at: string }
+export interface Bootstrap { version: string; mode: 'demo'; user: { name: string; role: Role }; workspace: Workspace; accounts: Account[]; assets: Asset[]; works: Work[]; batches: PublishBatch[]; orders: PromotionOrder[]; metrics: MetricPoint[]; audit: Audit[]; budget: { day: string; dailyUsed: number; outstanding: number }; worker: { online: boolean; updatedAt: string | null }; storage: string }
+export interface Context { workspaceId: string; role: Role; userName: string }
+export class AppError extends Error { constructor(public status: number, message: string, public code = 'INVALID_REQUEST') { super(message); } }

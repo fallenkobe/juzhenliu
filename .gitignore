@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+node_modules/
+.next/
+.data/
+.env
+.env.local
+*.tsbuildinfo
+playwright-report/
+test-results/
