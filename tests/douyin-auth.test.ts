@@ -21,7 +21,7 @@ before(async()=>{await db.migrate();owner=await auth.loginOwner(process.env.MATR
 after(async()=>{await db.close();if(path.dirname(directory)===path.resolve('.data')&&path.basename(directory).startsWith('test-oauth-'))rmSync(directory,{recursive:true,force:true});});
 
 test('OAuth migration upgrades idempotently and keeps original schema',async()=>{
-  await db.migrate();const versions=await db.query('SELECT version FROM schema_migrations');assert.equal(versions.length,2);
+  await db.migrate();const versions=await db.query('SELECT version FROM schema_migrations');assert.deepEqual(versions.map(v=>v.version).sort(),['001_alpha','002_douyin_oauth','003_video_analytics','004_managed_accounts','005_account_works']);
   await db.query('SELECT id FROM accounts LIMIT 1');
 });
 test('configuration blocks incomplete keys, unsafe callbacks and weak owner passwords',()=>{
@@ -85,6 +85,26 @@ test('logout invalidates outstanding state and owner password rotation revokes s
   const rows=await db.query('SELECT state_hash FROM douyin_oauth_attempts WHERE state_hash=$1',[hash(state)]);assert.equal(rows.length,0);
   const token=await auth.loginOwner(process.env.MATRIX_OWNER_PASSWORD);process.env.MATRIX_OWNER_PASSWORD=randomBytes(32).toString('base64url');await assert.rejects(()=>auth.listConnections(token),/会话已到期/);
 });
+test('short owner password works only in local development, with sessions still revocable',async()=>{
+  const saved={NODE_ENV:process.env.NODE_ENV,MATRIX_PUBLIC_ORIGIN:process.env.MATRIX_PUBLIC_ORIGIN,MATRIX_OWNER_PASSWORD:process.env.MATRIX_OWNER_PASSWORD};
+  try{
+    Object.assign(process.env,{NODE_ENV:'development',MATRIX_PUBLIC_ORIGIN:'',MATRIX_OWNER_PASSWORD:'dev'});
+    await db.query('DELETE FROM douyin_login_limits');
+    assert.equal(auth.connectionStatus().ownerConfigured,true);
+    const token=await auth.loginOwner('dev');await auth.requireOwner(token);
+    await assert.rejects(()=>auth.loginOwner('wrong'),/不正确/);
+    process.env.MATRIX_OWNER_PASSWORD='new';await assert.rejects(()=>auth.requireOwner(token),/会话已到期/);
+    process.env.MATRIX_OWNER_PASSWORD='dev';process.env.MATRIX_PUBLIC_ORIGIN='https://matrix.example';
+    assert.equal(auth.ownerPasswordConfigured(),false);await assert.rejects(()=>auth.loginOwner('dev'),/至少 24 位/);
+    Object.assign(process.env,{NODE_ENV:'production',MATRIX_PUBLIC_ORIGIN:''});
+    assert.equal(auth.ownerPasswordConfigured(),false);await assert.rejects(()=>auth.loginOwner('dev'),/至少 24 位/);
+    Object.assign(process.env,{NODE_ENV:'development',MATRIX_OWNER_PASSWORD:''});assert.equal(auth.ownerPasswordConfigured(),false);
+  }finally{
+    for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+    await db.query('DELETE FROM douyin_login_limits');
+  }
+});
+
 test('owner login rate limit is persisted and rejects repeated guesses',async()=>{
   await db.query('DELETE FROM douyin_login_limits');for(let i=0;i<10;i++)await assert.rejects(()=>auth.loginOwner('wrong'),/不正确/);await assert.rejects(()=>auth.loginOwner('wrong'),/尝试过多/);
 });

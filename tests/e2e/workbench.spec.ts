@@ -2,18 +2,20 @@ import { test, expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 const headers={'X-Matrix-Request':'alpha-0.01'};
-async function enter(page:Page){await page.goto('/');await page.getByRole('button',{name:'进入 Alpha 演示'}).click();await expect(page.getByRole('heading',{name:'数据总览',exact:true})).toBeVisible();}
+async function enter(page:Page){if(process.env.E2E_PRODUCTION==='1')await page.route('**/api/videos/session',async route=>{const response=await route.fetch({headers:{...route.request().headers(),origin:'https://video-e2e.example'}});await route.fulfill({response});});await page.goto('/');await page.getByLabel('矩阵流登录密码',{exact:true}).fill('browser-test-password-only-32-characters');await page.getByRole('button',{name:'登录矩阵流',exact:true}).click();await expect(page.getByRole('heading',{name:'数据总览',exact:true})).toBeVisible();}
 test('desktop overview, real backend data, CSV export and search',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await enter(page);
   await expect(page.getByText('Alpha 0.11',{exact:true}).first()).toBeVisible();
   const exported=await page.request.get('/api/analytics/export');expect(exported.status()).toBe(200);expect(await exported.text()).toContain('演示数据');
-  await page.getByRole('button',{name:'账号管理',exact:true}).click();await page.getByRole('textbox',{name:'搜索当前页面'}).fill('城市漫游');await expect(page.getByRole('heading',{name:'城市漫游指南',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'好物研究所',exact:true})).toHaveCount(0);
+  const data=await(await page.request.get('/api/bootstrap')).json();const title=data.assets[0].title;await page.getByRole('button',{name:'素材库',exact:true}).click();await page.getByRole('textbox',{name:'搜索当前页面'}).fill(title);await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible();
   await page.getByRole('button',{name:'数据总览',exact:true}).click();mkdirSync('.data/previews',{recursive:true});await page.screenshot({path:'.data/previews/alpha-0.01-desktop.png',fullPage:true});expect(errors).toEqual([]);
 });
-test('add a demo account and restore expired demo authorization',async({page})=>{
-  await enter(page);await page.getByRole('button',{name:'账号管理',exact:true}).click();await page.getByRole('button',{name:'添加演示账号',exact:true}).click();
-  const dialog=page.getByRole('dialog');await dialog.getByLabel('账号昵称').fill('Alpha 新创作');await dialog.getByLabel('账号标识').fill('alpha_browser_test');await dialog.getByRole('button',{name:'添加演示账号',exact:true}).click();await expect(dialog).not.toBeVisible();await expect(page.getByRole('heading',{name:'Alpha 新创作',exact:true})).toBeVisible();
-  await page.getByRole('button',{name:'重新授权（演示）'}).click();await expect(page.getByText('演示授权已更新',{exact:true})).toBeVisible();await page.reload();await expect(page.getByRole('heading',{name:'Alpha 新创作',exact:true})).toBeVisible();await page.getByRole('button',{name:'数据分析',exact:true}).click();await page.getByLabel('分析账号').selectOption({label:'Alpha 新创作'});await expect(page.locator('.trend-panel').getByText('暂无数据',{exact:true})).toBeVisible();
+test('sidebar account management opens the real workflow and preserves navigation',async({page})=>{
+  await enter(page);await page.getByRole('button',{name:'账号管理',exact:true}).click();await expect(page).toHaveURL('/accounts');
+  await expect(page.getByRole('heading',{name:'账号管理',exact:true})).toBeVisible();await expect(page.locator('input[type=password]')).toHaveCount(0);
+  await expect(page.locator('.sidebar .nav-item.active')).toHaveText('账号管理');await expect(page.getByRole('button',{name:'添加演示账号'})).toHaveCount(0);
+  await page.getByRole('button',{name:'数据总览',exact:true}).click();await expect(page.getByRole('heading',{name:'数据总览',exact:true})).toBeVisible();
+  await page.goto('/?view=accounts');await expect(page).toHaveURL('/accounts');await expect(page.locator('.sidebar')).toBeVisible();
 });
 test('publish preview and confirmation run through the independent worker',async({page})=>{
   await enter(page);await page.getByRole('button',{name:'一键发布',exact:true}).click();const dialog=page.getByRole('dialog');await dialog.getByLabel('选择发布素材').selectOption('asset-4');await dialog.getByLabel('发布文案').fill('浏览器验证：原创咖啡日记');await dialog.locator('label').filter({hasText:'生活不设限'}).getByRole('checkbox').check();await dialog.getByRole('button',{name:'预检发布'}).click();await expect(dialog.getByRole('heading',{name:'发布参数预检通过'})).toBeVisible();await dialog.getByRole('button',{name:'确认演示发布',exact:true}).click();await expect(dialog).not.toBeVisible();await expect(page.getByText('演示发布成功',{exact:true}).first()).toBeVisible();

@@ -2,6 +2,8 @@
 
 当前交接版本为 `v0.11.0-alpha.1`。功能、架构和已知限制先看根目录 [PROJECT_MEMORY.md](../PROJECT_MEMORY.md)，任务看 [TODO.md](../TODO.md)，版本规则看 [VERSIONING.md](VERSIONING.md)。
 
+新增 `/videos` 是独立的服务端视频查询业务，不需要助手/worker。配置TikHub密钥、管理密码后可单独运行Web；生产命令为 `npm run serve:videos`，配置与HTTPS部署见 [视频分析](VIDEO_ANALYTICS.md)。下文两个进程的启动方式仍针对本机账号报表助手。
+
 ## 1. 每台电脑独立准备
 
 - Windows，已安装 Microsoft Edge；助手与浏览器夹具测试目前使用 `msedge` 渠道。

@@ -10,17 +10,19 @@ const expiry=(seconds:number)=>new Date(Date.now()+seconds*1000).toISOString();
 export const OWNER_COOKIE='matrix_douyin_owner';
 interface ConnectedAccount { id:string; nickname:string; avatar:string; scope:string; expires_at:string; connected_at:string }
 const CALLBACK='/api/douyin/callback';
+function ownerPasswordMinimum(){return process.env.NODE_ENV==='development'&&!process.env.MATRIX_PUBLIC_ORIGIN?.trim()?3:24;}
+export function ownerPasswordConfigured(){return (process.env.MATRIX_OWNER_PASSWORD||'').length>=ownerPasswordMinimum();}
 function config(){
   const clientKey=(process.env.DOUYIN_CLIENT_KEY||'').trim(),clientSecret=(process.env.DOUYIN_CLIENT_SECRET||'').trim(),redirectUri=(process.env.DOUYIN_REDIRECT_URI||'').trim();
   const ownerPassword=process.env.MATRIX_OWNER_PASSWORD||'',encryptionKey=process.env.DOUYIN_TOKEN_KEY||'';
   let callbackValid=false;
   try{const u=new URL(redirectUri);callbackValid=u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&u.pathname===CALLBACK&&!['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{}
-  const checks=[{name:'MATRIX_OWNER_PASSWORD',ok:ownerPassword.length>=24,hint:'至少 24 位的工作空间管理密码'},{name:'DOUYIN_CLIENT_KEY',ok:!!clientKey,hint:'具备 user_info 权限的应用 Client Key'},{name:'DOUYIN_CLIENT_SECRET',ok:!!clientSecret,hint:'应用 Client Secret，仅在服务器保存'},{name:'DOUYIN_REDIRECT_URI',ok:callbackValid,hint:'已登记的 HTTPS 回调地址，路径为 '+CALLBACK},{name:'DOUYIN_TOKEN_KEY',ok:/^[a-f0-9]{64}$/i.test(encryptionKey),hint:'32 字节随机密钥的 64 位十六进制文本'}];
+  const checks=[{name:'MATRIX_OWNER_PASSWORD',ok:ownerPasswordConfigured(),hint:`至少 ${ownerPasswordMinimum()} 位的工作空间管理密码`},{name:'DOUYIN_CLIENT_KEY',ok:!!clientKey,hint:'具备 user_info 权限的应用 Client Key'},{name:'DOUYIN_CLIENT_SECRET',ok:!!clientSecret,hint:'应用 Client Secret，仅在服务器保存'},{name:'DOUYIN_REDIRECT_URI',ok:callbackValid,hint:'已登记的 HTTPS 回调地址，路径为 '+CALLBACK},{name:'DOUYIN_TOKEN_KEY',ok:/^[a-f0-9]{64}$/i.test(encryptionKey),hint:'32 字节随机密钥的 64 位十六进制文本'}];
   return {clientKey,clientSecret,redirectUri,ownerPassword,encryptionKey,checks};
 }
 export function connectionStatus(){const c=config();return{ready:c.checks.every(x=>x.ok),ownerConfigured:c.checks[0].ok,checks:c.checks,scope:'user_info',version:'0.11',authorizationOrigin:c.checks[3].ok?new URL(c.redirectUri).origin:null};}
 function requireConfig(){const c=config();if(!c.checks.every(x=>x.ok))throw new AppError(503,'真实抖音登录尚未配置完整，请查看接入检查清单','OAUTH_NOT_CONFIGURED');return c;}
-function ownerEpoch(){const c=config();if(c.ownerPassword.length<24)throw new AppError(503,'请先在服务器配置 MATRIX_OWNER_PASSWORD（至少 24 位）','OWNER_NOT_CONFIGURED');return hash(c.ownerPassword);}
+function ownerEpoch(){const c=config();if(!ownerPasswordConfigured())throw new AppError(503,`请先在服务器配置 MATRIX_OWNER_PASSWORD（至少 ${ownerPasswordMinimum()} 位）`,'OWNER_NOT_CONFIGURED');return hash(c.ownerPassword);}
 export async function loginOwner(password:unknown){
   const epoch=ownerEpoch();
   const bucket=String(Math.floor(Date.now()/900000));

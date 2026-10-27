@@ -3,6 +3,9 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import { oauthSchema } from './oauth-schema';
+import { videoSchema } from './video-schema';
+import { accountSchema } from './account-schema';
+import { worksSchema } from './works-schema';
 import { root, dataDir } from '../config/env';
 
 export { root, dataDir };
@@ -144,6 +147,21 @@ export class Database implements Client {
       if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001002)');
       for(const statement of oauthSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
       await tx.query("INSERT INTO schema_migrations VALUES('002_douyin_oauth',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
+    });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001003)');
+      for(const statement of videoSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      await tx.query("INSERT INTO schema_migrations VALUES('003_video_analytics',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
+    });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001004)');
+      for(const statement of accountSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      await tx.query("INSERT INTO schema_migrations VALUES('004_managed_accounts',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
+    });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001005)');
+      for(const statement of worksSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      await tx.query("INSERT INTO schema_migrations VALUES('005_account_works',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
     });
   }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }

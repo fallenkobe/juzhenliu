@@ -13,11 +13,12 @@
     "build": "next build apps/web",
     "start": "next start apps/web --hostname 127.0.0.1 --port 3000",
     "preview": "node scripts/dev.mjs --production",
+    "serve:videos": "node scripts/serve-videos.mjs",
     "worker": "tsx apps/worker/index.ts",
     "assistant": "tsx apps/assistant/index.ts",
     "db:init": "tsx scripts/init-db.ts",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "tsx --test tests/business.test.ts tests/douyin-auth.test.ts tests/assistant.test.ts",
+    "test": "tsx --test tests/business.test.ts tests/douyin-auth.test.ts tests/assistant.test.ts tests/video.test.ts tests/accounts.test.ts tests/works.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

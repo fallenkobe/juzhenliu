@@ -3,6 +3,7 @@ __pycache__/
 node_modules/
 .next/
 .data/
+.codex-remote-attachments/
 .env
 .env.*
 !.env.example

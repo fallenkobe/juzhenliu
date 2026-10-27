@@ -1,2 +1,3 @@
 import Workbench from '../components/workbench';
-export default function Page(){return <Workbench/>;}
+import {WorkspaceGate} from '../components/workspace-session';
+export default function Page(){return <WorkspaceGate><Workbench/></WorkspaceGate>;}
