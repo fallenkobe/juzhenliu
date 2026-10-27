@@ -3,7 +3,7 @@ import * as auth from '../domain/douyin-auth';
 import { AppError } from '../domain/types';
 import { CACHE_MINUTES, dailyLimit, dailyUsed, getVideo, historyCsv, listVideos, providerConfigured, queryVideo } from './service';
 import { addManagedAccount, listManagedAccounts, lookupAccount, removeManagedAccount } from '../accounts/service';
-import { queryAccountWorks } from '../accounts/works-service';
+import { queryAccountWorks, savedAccountWorks } from '../accounts/works-service';
 
 const shared = globalThis as typeof globalThis & { matrixVideoReady?: Promise<void> };
 function json(body: unknown, status = 200) { return Response.json(body,{status,headers:{'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}}); }
@@ -58,6 +58,7 @@ export async function handleVideoRequest(req: Request, action: string[], token?:
       const res = json({ok:true}); res.headers.set('Set-Cookie',`${auth.OWNER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${origin!.startsWith('https:')?'; Secure':''}`); return res;
     }
     await auth.requireOwner(token);
+    if (action.length === 3 && action[0] === 'accounts' && action[2] === 'works' && req.method === 'GET') return json({pages:await savedAccountWorks(token,action[1])});
     if (action.length === 3 && action[0] === 'accounts' && action[2] === 'works' && req.method === 'POST') {
       const body=await smallJson(req);
       if(body.refresh!==undefined&&typeof body.refresh!=='boolean')throw new AppError(400,'刷新参数无效');

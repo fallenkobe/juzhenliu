@@ -23,3 +23,27 @@ test('account API does not expose saved records without owner login',async({requ
   expect((await request.get('/api/videos/accounts')).status()).toBe(401);
   expect((await request.post('/api/videos/accounts/lookup',{headers:{Origin:origin,'X-Matrix-Request':'video-analytics-v1'},data:{douyinId:profile.douyinId}})).status()).toBe(401);
 });
+
+
+test('saved accounts search and exact large follower sorting stay local',async({page})=>{
+  let providerCalls=0;
+  const accounts=[
+    {...profile,uid:'7000000000000000011',douyinId:'alpha',nickname:'甲账号',followers:'9007199254740992'},
+    {...profile,uid:'7000000000000000012',douyinId:'beta',nickname:'乙账号',followers:'9007199254740993'},
+    {...profile,uid:'7000000000000000013',douyinId:'zero',nickname:'零粉丝账号',followers:'0'},
+    {...profile,uid:'7000000000000000014',douyinId:'missing',nickname:'缺失指标账号',followers:null}
+  ].map(a=>({...a,addedAt:profile.fetchedAt}));
+  await page.route('**/api/videos/status',route=>route.fulfill({json:{signedIn:true,ownerConfigured:true,providerConfigured:false,originConfigured:true,dailyUsed:0,dailyLimit:100,cacheMinutes:30}}));
+  await page.route('**/api/videos/accounts',route=>route.fulfill({json:{accounts}}));
+  await page.route('**/api/videos/accounts/lookup',route=>{providerCalls++;return route.abort();});
+  await page.route('**/api/videos/accounts/*/works',route=>{expect(route.request().method()).toBe('GET');return route.fulfill({json:{pages:[]}});});
+  await page.goto('/accounts');await expect(page.locator('.am-card')).toHaveCount(4);
+  await page.getByLabel('账号排序',{exact:true}).selectOption('followers');
+  await expect(page.locator('.am-card h3')).toHaveText(['乙账号','甲账号','零粉丝账号','缺失指标账号']);
+  await expect(page.locator('.am-card').first()).toContainText('9,007,199,254,740,993');
+  await page.getByLabel('查找已添加账号').fill(' ALPHA ');await expect(page.locator('.am-card h3')).toHaveText(['甲账号']);
+  await page.getByLabel('查找已添加账号').fill('7000000000000000014');await expect(page.locator('.am-card h3')).toHaveText(['缺失指标账号']);
+  await page.getByLabel('查找已添加账号').fill('不存在');await expect(page.getByRole('heading',{name:'没有匹配的账号'})).toBeVisible();
+  await page.getByRole('button',{name:'清空账号搜索'}).click();await expect(page.locator('.am-card')).toHaveCount(4);
+  await page.getByRole('button',{name:'查看作品',exact:true}).first().click();await expect(page.getByText('尚无保存的作品列表',{exact:false})).toBeVisible();await expect(page.getByRole('button',{name:'获取作品',exact:true})).toBeDisabled();expect(providerCalls).toBe(0);
+});

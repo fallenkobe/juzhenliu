@@ -6,13 +6,15 @@ const work=(id=vid,kind='video')=>({id,kind,title:id===vid?'合成视频A':kind=
 const report={videoId:vid,fetchedAt:'2026-10-27T08:00:00Z',totals:{data:{title:'合成视频A',publishedAt:null,durationSeconds:12,plays:'100',likes:'12',comments:'1',shares:'2',collects:'0'},error:null},history:{data:{start:'2026-07-18',end:'2026-07-18',continuous:true,plays:'100',rows:[{date:'2026-07-18',plays:'100',validPlays:null,likes:'12',comments:'1',shares:'2',collects:'0'}]},error:null}};
 
 test('Web account works: explicit paging, type separation, analysis navigation and reload without new query',async({page})=>{
-  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));let workCalls=0,queryCalls=0;
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));let workCalls=0,queryCalls=0;const savedPages:unknown[]=[];
   if(process.env.E2E_PRODUCTION==='1')await page.route('**/api/videos/session',async route=>{const response=await route.fetch({headers:{...route.request().headers(),origin}});await route.fulfill({response});});
   await page.route('**/api/videos/status',async route=>{const response=await route.fetch();await route.fulfill({json:{...await response.json(),providerConfigured:true}});});
   await page.route('**/api/videos/accounts',route=>route.fulfill({json:{accounts:[account]}}));
   await page.route('**/api/videos/accounts/'+uid+'/works',route=>{
+    if(route.request().method()==='GET')return route.fulfill({json:{pages:savedPages}});
     workCalls++;const body=route.request().postDataJSON();const cursor=body.cursor||'0';
-    return route.fulfill({json:{cached:false,page:{accountUid:uid,cursor,fetchedAt:account.fetchedAt,hasMore:cursor==='0',nextCursor:cursor==='0'?'100':null,items:cursor==='0'?[work(),work(photoId,'image')]:[work(),work('7000000000000000003')]}}});
+    const value={accountUid:uid,cursor,fetchedAt:account.fetchedAt,hasMore:cursor==='0',nextCursor:cursor==='0'?'100':null,items:cursor==='0'?[work(),work(photoId,'image')]:[work(),work('7000000000000000003')]};savedPages.push(value);
+    return route.fulfill({json:{cached:false,page:value}});
   });
   await page.route('**/api/videos/query',route=>{queryCalls++;expect(route.request().postDataJSON().input).toBe(vid);return route.fulfill({json:{cached:false,report}});});
   await page.route('**/api/videos/reports/*',route=>route.fulfill({json:{report}}));
@@ -22,12 +24,19 @@ test('Web account works: explicit paging, type separation, analysis navigation a
   await expect(page.locator('.am-work')).toHaveCount(2);expect(workCalls).toBe(1);expect(queryCalls).toBe(0);
   const imageRow=page.locator('.am-work').filter({hasText:'合成图文B'});await expect(imageRow.getByText('图文',{exact:true})).toBeVisible();await expect(imageRow.getByRole('button',{name:'查看分析'})).toHaveCount(0);await expect(imageRow.getByRole('link',{name:'打开作品'})).toHaveAttribute('href','https://www.douyin.com/note/'+photoId);
   await page.getByRole('button',{name:'加载更多',exact:true}).click();await expect(page.locator('.am-work')).toHaveCount(3);expect(workCalls).toBe(2);expect(queryCalls).toBe(0);await expect(page.getByText('本次返回完毕',{exact:true})).toBeVisible();
+  await page.getByLabel('作品类型',{exact:true}).selectOption('image');await expect(page.locator('.am-work')).toHaveCount(1);
+  await page.getByLabel('查找已加载作品').fill('找不到');await expect(page.getByText('已加载作品中没有匹配结果。')).toBeVisible();
+  await page.getByRole('button',{name:'清空作品筛选'}).click();await page.getByLabel('作品排序').selectOption('oldest');await expect(page.locator('.am-work')).toHaveCount(3);expect(workCalls).toBe(2);expect(queryCalls).toBe(0);
   await page.screenshot({path:'test-results/account-works-web.png',fullPage:true});
-  await page.locator('.am-work').filter({hasText:'合成视频A'}).getByRole('button',{name:'查看分析',exact:true}).click();await expect(page).toHaveURL('/videos?videoId='+vid);await expect(page.getByRole('heading',{name:'合成视频A',exact:true})).toBeVisible();expect(queryCalls).toBe(1);
+  await page.locator('.am-work').filter({hasText:'合成视频A'}).getByRole('button',{name:'查看分析',exact:true}).click();await expect(page).toHaveURL('/videos?videoId='+vid+'&accountUid='+uid);await expect(page.getByRole('heading',{name:'合成视频A',exact:true})).toBeVisible();expect(queryCalls).toBe(1);
   await page.reload();await expect(page.getByRole('heading',{name:'合成视频A',exact:true})).toBeVisible();expect(queryCalls).toBe(1);
+  await page.getByRole('link',{name:'返回账号作品'}).click();await expect(page).toHaveURL('/accounts?accountUid='+uid);await expect(page.locator('.am-work')).toHaveCount(3);
+  await expect(page.getByText('已恢复保存的作品列表',{exact:false})).toBeVisible();expect(workCalls).toBe(2);expect(queryCalls).toBe(1);
+  await page.reload();await expect(page.locator('.am-work')).toHaveCount(3);expect(workCalls).toBe(2);
   expect(errors).toEqual([]);
 });
 test('work list API requires owner access and valid origin',async({request})=>{
+  expect((await request.get('/api/videos/accounts/'+uid+'/works')).status()).toBe(401);
   const res=await request.post('/api/videos/accounts/'+uid+'/works',{headers:{Origin:origin,'X-Matrix-Request':'video-analytics-v1'},data:{cursor:'0'}});expect(res.status()).toBe(401);
   const denied=await request.post('/api/videos/accounts/'+uid+'/works',{headers:{Origin:'https://evil.example','X-Matrix-Request':'video-analytics-v1'},data:{cursor:'0'}});expect(denied.status()).toBe(403);
 });

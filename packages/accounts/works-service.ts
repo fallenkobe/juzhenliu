@@ -9,6 +9,22 @@ import type {AccountWorkPage} from './works-types';
 import {fetchAccountWorks,parseWorkCursor} from './works-provider';
 
 const now=()=>new Date().toISOString();
+// Navigation reads saved pages even when stale; only an explicit POST may query the provider.
+export async function savedAccountWorks(token:string|undefined,uid:string) {
+  await requireOwner(token);
+  if(!/^\d{1,25}$/.test(uid))throw new AppError(400,'账号标识无效');
+  return db.transaction(null,async tx=>{
+    if(!(await tx.query('SELECT uid FROM managed_douyin_accounts WHERE uid=$1',[uid])).length)throw new AppError(404,'请先添加这个账号，再查看作品','NOT_FOUND');
+    const rows=await tx.query('SELECT page_json FROM account_work_pages WHERE uid=$1',[uid]);
+    const byCursor=new Map(rows.map(row=>{const page=JSON.parse(row.page_json) as AccountWorkPage;return [page.cursor,page] as const;}));
+    const pages:AccountWorkPage[]=[],seen=new Set<string>();let cursor:string|null='0';
+    while(cursor&&!seen.has(cursor)){
+      seen.add(cursor);const page=byCursor.get(cursor);if(!page)break;
+      pages.push(page);cursor=page.hasMore?page.nextCursor:null;
+    }
+    return pages;
+  });
+}
 export async function queryAccountWorks(token:string|undefined,uid:string,inputCursor:unknown,refresh=false,transport?:TikHubTransport) {
   await requireOwner(token);
   if(!/^\d{1,25}$/.test(uid))throw new AppError(400,'账号标识无效');

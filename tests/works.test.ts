@@ -9,8 +9,10 @@ delete process.env.MATRIX_PUBLIC_ORIGIN;
 const {db}=await import('../packages/db/index');
 const auth=await import('../packages/domain/douyin-auth');
 const {parseAccountWorks,parseWorkCursor}=await import('../packages/accounts/works-provider');
-const {queryAccountWorks}=await import('../packages/accounts/works-service');
+const {queryAccountWorks,savedAccountWorks}=await import('../packages/accounts/works-service');
+const {workspaceReturnPath}=await import('../packages/domain/workspace-path');
 const {dailyUsed}=await import('../packages/video/service');
+const {handleVideoRequest}=await import('../packages/video/http');
 const account:AccountProfile={uid:'7000000000000000001',secUid:'MS4wLjABAAAAworks_fixture_00000001',douyinId:'12345678901',nickname:'合成作品账号',avatarUrl:null,signature:'',followers:null,following:'0',posts:'3',likes:null,favorites:null,fetchedAt:new Date().toISOString()};
 const id='7000000000000000001';
 let owner:string;
@@ -54,6 +56,27 @@ test('page queries use the stored account identity, cache each cursor and share 
   assert.equal((await queryAccountWorks(owner,account.uid,'000',true,counted)).cached,true);assert.equal(calls,1);
   const next=await queryAccountWorks(owner,account.uid,first.page.nextCursor,false,counted);assert.equal(next.page.hasMore,false);assert.equal(calls,2);assert.equal(await dailyUsed(),2);
 });
+test('saved-page navigation reads stale complete cursor chains without provider config or quota',async()=>{
+  const used=await dailyUsed();const key=process.env.TIKHUB_API_KEY;process.env.TIKHUB_API_KEY='';
+  try{
+    await db.query('UPDATE account_work_pages SET fetched_at=$1 WHERE uid=$2',['2000-01-01T00:00:00Z',account.uid]);
+    await assert.rejects(()=>savedAccountWorks('demo',account.uid),/会话已到期/);
+    await assert.rejects(()=>savedAccountWorks(owner,'invalid'),/标识无效/);
+    await assert.rejects(()=>savedAccountWorks(owner,'7000000000000000999'),/先添加/);
+    const pages=await savedAccountWorks(owner,account.uid);assert.deepEqual(pages.map(p=>p.cursor),['0','100']);assert.equal(await dailyUsed(),used);
+    const response=await handleVideoRequest(new Request('http://localhost/api/videos/accounts/'+account.uid+'/works'),['accounts',account.uid,'works'],owner);
+    assert.equal(response.status,200);assert.equal(response.headers.get('Cache-Control'),'private, no-store');assert.deepEqual((await response.json()).pages.map((p:{cursor:string})=>p.cursor),['0','100']);assert.equal(await dailyUsed(),used);
+    await db.query('INSERT INTO account_work_pages VALUES($1,$2,$3,$4)',[account.uid,'999',JSON.stringify({...pages[0],cursor:'999'}),account.fetchedAt]);
+    assert.equal((await savedAccountWorks(owner,account.uid)).length,2);
+    await db.query('DELETE FROM account_work_pages WHERE uid=$1 AND cursor=$2',[account.uid,'999']);
+  }finally{process.env.TIKHUB_API_KEY=key;}
+});
+
+test('workspace return paths preserve account context while rejecting external and malformed destinations',()=>{
+  for(const path of ['/accounts?accountUid='+account.uid,'/videos?videoId='+id+'&accountUid='+account.uid])assert.equal(workspaceReturnPath(path),path);
+  for(const path of ['//evil.example','/accounts?accountUid=evil','/videos?videoId='+id+'&accountUid='+account.uid+'&next=https://evil.example','/accounts?accountUid='+account.uid+'#bad'])assert.equal(workspaceReturnPath(path),'/accounts');
+});
+
 test('failed refresh retains the previous page and releases leases',async()=>{
   await db.query('UPDATE account_work_pages SET fetched_at=$1 WHERE uid=$2',['2000-01-01T00:00:00Z',account.uid]);
   await assert.rejects(()=>queryAccountWorks(owner,account.uid,'0',true,async()=>new Response('upstream-private',{status:500})),/无法完成/);
@@ -72,5 +95,5 @@ test('concurrent loads bill once; exhausted quota and missing key still allow ca
 });
 test('removing the account cascades its work caches and denies subsequent reads',async()=>{
   await db.query('DELETE FROM managed_douyin_accounts WHERE uid=$1',[account.uid]);assert.equal((await db.query('SELECT * FROM account_work_pages')).length,0);
-  await assert.rejects(()=>queryAccountWorks(owner,account.uid,'0',false,transport),/先添加/);
+  await assert.rejects(()=>queryAccountWorks(owner,account.uid,'0',false,transport),/先添加/);await assert.rejects(()=>savedAccountWorks(owner,account.uid),/先添加/);
 });
