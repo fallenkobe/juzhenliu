@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { Pool, type PoolClient } from 'pg';
+import { oauthSchema } from './oauth-schema';
 
 export type Row = Record<string, any>;
 export interface Query { <T = Row>(sql: string, params?: (string | number | null)[]): Promise<T[]> }
@@ -141,6 +142,11 @@ export class Database implements Client {
       try { await c.query('BEGIN'); await c.query("SELECT pg_advisory_xact_lock(91001001)"); await c.query(schema); await c.query("INSERT INTO schema_migrations VALUES('001_alpha', $1) ON CONFLICT DO NOTHING", [new Date().toISOString()]); await c.query('COMMIT'); }
       catch (error) { await c.query('ROLLBACK'); throw error; } finally { c.release(); }
     } else await this.exclusive(async () => { this.sqlite!.exec('BEGIN IMMEDIATE'); try { this.sqlite!.exec(schema); await this.sqlQuery("INSERT INTO schema_migrations VALUES('001_alpha',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]); this.sqlite!.exec('COMMIT'); } catch (e) { this.sqlite!.exec('ROLLBACK'); throw e; } });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001002)');
+      for(const statement of oauthSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      await tx.query("INSERT INTO schema_migrations VALUES('002_douyin_oauth',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
+    });
   }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }
 }

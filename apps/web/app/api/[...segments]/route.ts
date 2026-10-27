@@ -31,7 +31,7 @@ async function handler(req:NextRequest,options:{params:Promise<{segments:string[
     const {segments}=await options.params;const resource=segments.join('/'),method=req.method;
     await ensureReady();
     if(method!=='GET')protectMutation(req);
-    if(resource==='health'&&method==='GET')return json({ok:true,version:'Alpha 0.01',mode:'demo'});
+    if(resource==='health'&&method==='GET')return json({ok:true,version:'Alpha 0.11',mode:'demo'});
     if(resource==='session'&&method==='POST'){
       const token=await service.createSession();const res=json({ok:true});res.cookies.set(COOKIE,token,{httpOnly:true,sameSite:'strict',secure:req.nextUrl.protocol==='https:',path:'/',maxAge:43200});return res;
     }

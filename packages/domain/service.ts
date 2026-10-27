@@ -61,7 +61,7 @@ export async function bootstrap(ctx: Context): Promise<Bootstrap> {
     db.query('SELECT * FROM worker_heartbeat ORDER BY updated_at DESC LIMIT 1'),
     budgetUsage(db,ctx,dayInZone(new Date(),ws.timezone))
   ]);
-  return { version:'Alpha 0.01', mode:'demo', user:{name:ctx.userName,role:ctx.role},workspace:ws,
+  return { version:'Alpha 0.11', mode:'demo', user:{name:ctx.userName,role:ctx.role},workspace:ws,
     accounts,assets,works,batches:batches.map(b=>({...b,jobs:jobs.filter(j=>j.batch_id===b.id)})), orders,metrics,audit:events,budget,
     worker:{online:!!heartbeat[0] && Date.now()-Date.parse(heartbeat[0].updated_at)<15000,updatedAt:heartbeat[0]?.updated_at??null}, storage:storageMode } as Bootstrap;
 }

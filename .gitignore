@@ -4,7 +4,15 @@ node_modules/
 .next/
 .data/
 .env
-.env.local
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+.auth/
+playwright/.auth/
 *.tsbuildinfo
 playwright-report/
 test-results/

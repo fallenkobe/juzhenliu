@@ -5,7 +5,7 @@ const headers={'X-Matrix-Request':'alpha-0.01'};
 async function enter(page:Page){await page.goto('/');await page.getByRole('button',{name:'进入 Alpha 演示'}).click();await expect(page.getByRole('heading',{name:'数据总览',exact:true})).toBeVisible();}
 test('desktop overview, real backend data, CSV export and search',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await enter(page);
-  await expect(page.getByText('Alpha 0.01',{exact:true}).first()).toBeVisible();
+  await expect(page.getByText('Alpha 0.11',{exact:true}).first()).toBeVisible();
   const exported=await page.request.get('/api/analytics/export');expect(exported.status()).toBe(200);expect(await exported.text()).toContain('演示数据');
   await page.getByRole('button',{name:'账号管理',exact:true}).click();await page.getByRole('textbox',{name:'搜索当前页面'}).fill('城市漫游');await expect(page.getByRole('heading',{name:'城市漫游指南',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'好物研究所',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:'数据总览',exact:true}).click();mkdirSync('.data/previews',{recursive:true});await page.screenshot({path:'.data/previews/alpha-0.01-desktop.png',fullPage:true});expect(errors).toEqual([]);
