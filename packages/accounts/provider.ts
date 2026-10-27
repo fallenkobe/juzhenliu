@@ -1,6 +1,7 @@
 import { AppError } from '../domain/types';
 import { count, requestTikHub, type TikHubTransport } from '../providers/tikhub';
 import type { AccountProfile } from './types';
+import {imageCandidates} from './image-urls';
 
 const object = (v: unknown): Record<string,unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string,unknown> : {};
 const secId = (v:unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{20,256}$/.test(v);
@@ -13,21 +14,12 @@ function available(value: unknown) {
   if (d.status_code !== 0) throw new AppError(502,'没有取得账号资料，请核对抖音号或稍后重试', 'ACCOUNT_UNAVAILABLE');
   return d;
 }
-function avatar(value: unknown): string | null {
-  const urls = object(value).url_list;
-  if (!Array.isArray(urls)) return null;
-  for (const value of urls) try {
-    if (typeof value !== 'string' || value.length > 2048) continue;
-    const u = new URL(value);
-    if (u.protocol === 'https:' && !u.username && !u.password && !u.port && ['douyinpic.com','byteimg.com','douyincdn.com'].some(host=>u.hostname===host||u.hostname.endsWith('.'+host))) return u.href;
-  } catch {}
-  return null;
-}
 export function parseAccountProfile(value: unknown, input: string, sec: string, expectedUid?: string): AccountProfile {
   const u = object(available(value).user);
   if (typeof u.uid !== 'string' || !/^\d{1,25}$/.test(u.uid) || !secId(u.sec_uid) || u.sec_uid !== sec || (expectedUid && u.uid !== expectedUid) || u.unique_id !== input) throw new AppError(502,'返回账号与输入抖音号不一致，未添加账号；请核对最新抖音号', 'ACCOUNT_MISMATCH');
   if (typeof u.nickname !== 'string' || !u.nickname.trim()) throw new AppError(502,'账号资料不完整，请稍后重试', 'PROVIDER_RESPONSE');
-  return {uid:u.uid,secUid:u.sec_uid,douyinId:input,nickname:u.nickname.slice(0,100),signature:typeof u.signature==='string'?u.signature.slice(0,500):'',avatarUrl:avatar(u.avatar_thumb),followers:count(u.follower_count),following:count(u.following_count),posts:count(u.aweme_count),likes:count(u.total_favorited),favorites:count(u.favoriting_count),fetchedAt:new Date().toISOString()};
+  const avatarUrls=imageCandidates(u.avatar_larger,u.avatar_medium,u.avatar_thumb);
+  return {uid:u.uid,secUid:u.sec_uid,douyinId:input,nickname:u.nickname.slice(0,100),signature:typeof u.signature==='string'?u.signature.slice(0,500):'',avatarUrl:avatarUrls[0]??null,avatarUrls,followers:count(u.follower_count),following:count(u.following_count),posts:count(u.aweme_count),likes:count(u.total_favorited),favorites:count(u.favoriting_count),fetchedAt:new Date().toISOString()};
 }
 export async function fetchAccount(input: string, key: string, transport?: TikHubTransport): Promise<AccountProfile> {
   let sec: string | undefined, uid: string | undefined;
@@ -49,4 +41,8 @@ export async function fetchAccount(input: string, key: string, transport?: TikHu
     sec=u.sec_uid;
   }
   return parseAccountProfile(await requestTikHub('/api/v1/douyin/app/v3/handler_user_profile',key,{sec_user_id:sec},transport),input,sec,uid);
+}
+
+export async function fetchSavedAccount(profile:AccountProfile,key:string,transport?:TikHubTransport):Promise<AccountProfile> {
+  return parseAccountProfile(await requestTikHub('/api/v1/douyin/app/v3/handler_user_profile',key,{sec_user_id:profile.secUid},transport),profile.douyinId,profile.secUid,profile.uid);
 }

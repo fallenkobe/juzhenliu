@@ -2,18 +2,13 @@ import { AppError } from '../domain/types';
 import { requestTikHub, type TikHubTransport } from '../providers/tikhub';
 import type { AccountProfile } from './types';
 import type { AccountWork, AccountWorkPage } from './works-types';
+import {imageCandidates} from './image-urls';
 
 const object = (v:unknown):Record<string,unknown> => v !== null && typeof v==='object' && !Array.isArray(v) ? v as Record<string,unknown> : {};
 export function parseWorkCursor(value:unknown):string {
   if(value===undefined)return '0';
   if(typeof value!=='string'||!/^\d{1,20}$/.test(value))throw new AppError(400,'作品分页游标无效','INVALID_CURSOR');
   return BigInt(value).toString();
-}
-function coverUrl(value:unknown):string|null {
-  const urls=object(value).url_list;
-  if(!Array.isArray(urls))return null;
-  for(const value of urls)try{if(typeof value!=='string'||value.length>4096)continue;const u=new URL(value);if(u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&['douyinpic.com','byteimg.com','douyincdn.com'].some(h=>u.hostname===h||u.hostname.endsWith('.'+h)))return u.href;}catch{}
-  return null;
 }
 export function parseAccountWorks(value:unknown,account:AccountProfile,cursor:string):AccountWorkPage {
   const d=object(value);
@@ -41,7 +36,9 @@ export function parseAccountWorks(value:unknown,account:AccountProfile,cursor:st
     const kind:AccountWork['kind']=images||a.aweme_type===68||shareKind==='note'?'image':a.aweme_type===0||shareKind==='video'?'video':'other';
     const seconds=typeof a.create_time==='number'?a.create_time:typeof a.create_time==='string'&&/^\d+$/.test(a.create_time)?Number(a.create_time):NaN;
     const date=new Date(seconds*1000);
-    unique.set(a.aweme_id,{id:a.aweme_id,title:typeof a.desc==='string'?a.desc.slice(0,2000):'',kind,url:`https://www.douyin.com/${kind==='image'?'note':'video'}/${a.aweme_id}`,coverUrl:coverUrl(object(a.video).cover)||coverUrl(object(Array.isArray(a.images)?a.images[0]:null)),publishedAt:seconds>0&&Number.isFinite(date.getTime())?date.toISOString():null});
+    const video=object(a.video),firstImage=object(Array.isArray(a.images)?a.images[0]:null);
+    const coverUrls=imageCandidates(video.cover,video.origin_cover,firstImage,video.dynamic_cover);
+    unique.set(a.aweme_id,{id:a.aweme_id,title:typeof a.desc==='string'?a.desc.slice(0,2000):'',kind,url:`https://www.douyin.com/${kind==='image'?'note':'video'}/${a.aweme_id}`,coverUrl:coverUrls[0]??null,coverUrls,publishedAt:seconds>0&&Number.isFinite(date.getTime())?date.toISOString():null});
   }
   return {accountUid:account.uid,cursor,nextCursor,hasMore,fetchedAt:new Date().toISOString(),items:[...unique.values()]};
 }

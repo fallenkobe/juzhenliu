@@ -4,7 +4,7 @@ import { requireOwner } from '../domain/douyin-auth';
 import { AppError } from '../domain/types';
 import { reserveDailyQuery } from '../video/service';
 import type { TikHubTransport } from '../providers/tikhub';
-import { fetchAccount, parseDouyinId } from './provider';
+import { fetchAccount, fetchSavedAccount, parseDouyinId } from './provider';
 import type { AccountPreview, AccountProfile, ManagedAccount } from './types';
 
 const now = () => new Date().toISOString();
@@ -61,4 +61,35 @@ export async function removeManagedAccount(token: string | undefined, uid: strin
   const removed = await db.query('DELETE FROM managed_douyin_accounts WHERE uid=$1 RETURNING uid',[uid]);
   if (!removed.length) throw new AppError(404,'账号记录不存在','NOT_FOUND');
   return {ok:true};
+}
+
+export async function refreshManagedAccount(token:string|undefined,uid:string,transport?:TikHubTransport) {
+  await requireOwner(token);
+  if(!/^\d{1,25}$/.test(uid))throw new AppError(400,'账号标识无效');
+  const lease=randomUUID();
+  const saved=await db.transaction(null,async tx=>{
+    const [row]=await tx.query('SELECT profile_json,added_at FROM managed_douyin_accounts WHERE uid=$1',[uid]);
+    if(!row)throw new AppError(404,'账号记录不存在','NOT_FOUND');
+    const profile=JSON.parse(row.profile_json) as AccountProfile;
+    if(Date.now()-new Date(profile.fetchedAt).getTime()<60000)return {profile,addedAt:row.added_at,cached:true};
+    if(!process.env.TIKHUB_API_KEY?.trim())throw new AppError(503,'请管理员在服务端配置 TIKHUB_API_KEY','PROVIDER_NOT_CONFIGURED');
+    const got=await tx.query(`INSERT INTO account_lookup_leases VALUES($1,$2,$3)
+      ON CONFLICT(douyin_id) DO UPDATE SET lease_token=excluded.lease_token,expires_at=excluded.expires_at
+      WHERE account_lookup_leases.expires_at<=$4 RETURNING douyin_id`,[profile.douyinId,lease,new Date(Date.now()+90000).toISOString(),now()]);
+    if(!got.length)throw new AppError(409,'这个账号正在更新中，请稍后重试','QUERY_RUNNING');
+    await reserveDailyQuery(tx);
+    return {profile,addedAt:row.added_at,cached:false};
+  });
+  if(saved.cached)return {account:{...saved.profile,addedAt:saved.addedAt},cached:true};
+  try{
+    const profile=await fetchSavedAccount(saved.profile,process.env.TIKHUB_API_KEY!.trim(),transport);
+    await requireOwner(token);
+    await db.transaction(null,async tx=>{
+      const owned=await tx.query('SELECT douyin_id FROM account_lookup_leases WHERE douyin_id=$1 AND lease_token=$2 AND expires_at>$3',[saved.profile.douyinId,lease,now()]);
+      if(!owned.length)throw new AppError(409,'账号更新已超时，请重试','QUERY_EXPIRED');
+      const rows=await tx.query('UPDATE managed_douyin_accounts SET profile_json=$1 WHERE uid=$2 RETURNING uid',[JSON.stringify(profile),uid]);
+      if(!rows.length)throw new AppError(404,'账号已移除','NOT_FOUND');
+    });
+    return {account:{...profile,addedAt:saved.addedAt},cached:false};
+  }finally{await db.query('DELETE FROM account_lookup_leases WHERE douyin_id=$1 AND lease_token=$2',[saved.profile.douyinId,lease]);}
 }

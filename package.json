@@ -18,7 +18,7 @@
     "assistant": "tsx apps/assistant/index.ts",
     "db:init": "tsx scripts/init-db.ts",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "tsx --test tests/business.test.ts tests/douyin-auth.test.ts tests/assistant.test.ts tests/video.test.ts tests/accounts.test.ts tests/works.test.ts",
+    "test": "tsx --test tests/business.test.ts tests/douyin-auth.test.ts tests/assistant.test.ts tests/video.test.ts tests/accounts.test.ts tests/works.test.ts tests/images.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

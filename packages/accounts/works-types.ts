@@ -4,6 +4,7 @@ export interface AccountWork {
   kind: 'video' | 'image' | 'other';
   url: string;
   coverUrl: string | null;
+  coverUrls?: string[];
   publishedAt: string | null;
 }
 export interface AccountWorkPage {

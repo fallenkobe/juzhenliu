@@ -6,6 +6,7 @@ export interface AccountProfile {
   douyinId: string;
   nickname: string;
   avatarUrl: string | null;
+  avatarUrls?: string[];
   signature: string;
   followers: Count;
   following: Count;

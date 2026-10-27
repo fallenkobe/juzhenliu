@@ -2,8 +2,9 @@ import { db } from '../db/index';
 import * as auth from '../domain/douyin-auth';
 import { AppError } from '../domain/types';
 import { CACHE_MINUTES, dailyLimit, dailyUsed, getVideo, historyCsv, listVideos, providerConfigured, queryVideo } from './service';
-import { addManagedAccount, listManagedAccounts, lookupAccount, removeManagedAccount } from '../accounts/service';
+import { addManagedAccount, listManagedAccounts, lookupAccount, removeManagedAccount, refreshManagedAccount } from '../accounts/service';
 import { queryAccountWorks, savedAccountWorks } from '../accounts/works-service';
+import { accountImage } from '../accounts/image-service';
 
 const shared = globalThis as typeof globalThis & { matrixVideoReady?: Promise<void> };
 function json(body: unknown, status = 200) { return Response.json(body,{status,headers:{'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}}); }
@@ -58,6 +59,8 @@ export async function handleVideoRequest(req: Request, action: string[], token?:
       const res = json({ok:true}); res.headers.set('Set-Cookie',`${auth.OWNER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${origin!.startsWith('https:')?'; Secure':''}`); return res;
     }
     await auth.requireOwner(token);
+    if (action[0] === 'images' && req.method === 'GET') return await accountImage(token,action.slice(1));
+    if (action.length === 3 && action[0] === 'accounts' && action[2] === 'refresh' && req.method === 'POST') return json(await refreshManagedAccount(token,action[1]));
     if (action.length === 3 && action[0] === 'accounts' && action[2] === 'works' && req.method === 'GET') return json({pages:await savedAccountWorks(token,action[1])});
     if (action.length === 3 && action[0] === 'accounts' && action[2] === 'works' && req.method === 'POST') {
       const body=await smallJson(req);
