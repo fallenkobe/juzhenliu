@@ -3,6 +3,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+try {
+  process.loadEnvFile(path.join(root, '.env'));
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
 const port = process.env.PORT || '3000';
 const env = { ...process.env, MATRIX_ROOT: root };
 const children = [

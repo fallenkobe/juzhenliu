@@ -3,15 +3,13 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import { oauthSchema } from './oauth-schema';
+import { root, dataDir } from '../config/env';
+
+export { root, dataDir };
 
 export type Row = Record<string, any>;
 export interface Query { <T = Row>(sql: string, params?: (string | number | null)[]): Promise<T[]> }
 export interface Client { query: Query }
-// Do not search the filesystem at module import: bundlers would watch the
-// complete repository, including the database files changed by the worker.
-export const root = process.env.MATRIX_ROOT || (path.basename(process.cwd())==='web'&&path.basename(path.dirname(process.cwd()))==='apps'?path.resolve(process.cwd(),'../..'):process.cwd());
-try { process.loadEnvFile(path.join(root, '.env')); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-export const dataDir = path.resolve(/* turbopackIgnore: true */ process.env.MATRIX_DATA_DIR || path.join(root, '.data'));
 export const storageMode = process.env.DATABASE_URL ? 'PostgreSQL' : 'SQLite';
 
 const schema = `
