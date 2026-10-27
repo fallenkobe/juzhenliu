@@ -7,6 +7,7 @@
 1. 阅读根目录 [PROJECT_MEMORY.md](PROJECT_MEMORY.md)，了解已确认需求、架构、实测范围、限制和最近问题。
 2. 阅读 [TODO.md](TODO.md) 与 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。涉及版本提交时，阅读 [docs/VERSIONING.md](docs/VERSIONING.md)。
 3. 查看 `git status --short`、当前分支、最近提交；尊重本地尚未提交的用户工作。
+   双机继续开发时，先 `git fetch origin --tags`，核对**当前跟踪分支**。工作区干净且仅落后远程时，执行 `git pull --ff-only`。不要默认切回 main：当前最新开发基线为 `feature/unify-local-env`，main / `v0.11.0-alpha.1` 是旧快照。有未提交改动或分歧时先保留并比较，不 reset、不覆盖、不强推。
 4. 修改 `apps/web` 前，同时遵循该目录的 `AGENTS.md`，阅读项目安装版本自带的相关 Next.js 文档。
 
 ## 项目关键约定

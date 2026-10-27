@@ -2,6 +2,21 @@
 
 当前交接版本为 `v0.11.0-alpha.1`。功能、架构和已知限制先看根目录 [PROJECT_MEMORY.md](../PROJECT_MEMORY.md)，任务看 [TODO.md](../TODO.md)，版本规则看 [VERSIONING.md](VERSIONING.md)。
 
+## 当前接续入口（2026-10-27 更新）
+
+最新开发成果在 **`feature/unify-local-env`**，功能提交为 `a341b7f`。`main` 与 `v0.11.0-alpha.1` 仍是较早发布快照。该功能分支已包含纯Web的 `/login`、`/accounts`、`/videos`，不能按分支名误认为只有环境配置修改。
+
+首次获取最新功能，在 clone 后执行：
+
+```powershell
+git fetch origin --tags
+git switch --track origin/feature/unify-local-env
+```
+
+已有同名本地分支时，先确认无未提交工作，再切到该分支并 `git pull --ff-only`。以后每次继续开发，先同步**当前跟踪分支**，不要直接按旧示例切回 main。
+
+当前产品只做Web，新使用者无需安装或运行助手。启动 `npm run dev` 后从 `/login` 登录矩阵流，再进入账号管理与视频分析；需要本机根 `.env` 的 `MATRIX_OWNER_PASSWORD`，真实查询还需 `TIKHUB_API_KEY`。这些配置不会从另一台电脑随Git同步，详情见 [Web运行说明](VIDEO_ANALYTICS.md)。下文助手步骤是保留路径，不是新Web功能的必备前置条件。
+
 新增 `/videos` 是独立的服务端视频查询业务，不需要助手/worker。配置TikHub密钥、管理密码后可单独运行Web；生产命令为 `npm run serve:videos`，配置与HTTPS部署见 [视频分析](VIDEO_ANALYTICS.md)。下文两个进程的启动方式仍针对本机账号报表助手。
 
 ## 1. 每台电脑独立准备
