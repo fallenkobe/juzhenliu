@@ -69,7 +69,11 @@ export async function handleVideoRequest(req: Request, action: string[], token?:
     }
     if (resource === 'accounts' && req.method === 'GET') return json({accounts:await listManagedAccounts(token)});
     if (resource === 'accounts/lookup' && req.method === 'POST') return json(await lookupAccount(token,(await smallJson(req)).douyinId));
-    if (resource === 'accounts' && req.method === 'POST') return json({account:await addManagedAccount(token,(await smallJson(req)).lookupId)});
+    if (resource === 'accounts' && req.method === 'POST') {
+      const body=await smallJson(req);
+      if(body.confirmMismatch!==undefined&&typeof body.confirmMismatch!=='boolean')throw new AppError(400,'账号确认参数无效');
+      return json({account:await addManagedAccount(token,body.lookupId,body.confirmMismatch===true)});
+    }
     if (action.length === 2 && action[0] === 'accounts' && req.method === 'DELETE') return json(await removeManagedAccount(token,action[1]));
     if (resource === 'recent' && req.method === 'GET') return json({videos:await listVideos(token)});
     if (resource === 'query' && req.method === 'POST') {

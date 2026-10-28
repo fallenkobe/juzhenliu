@@ -74,6 +74,27 @@ test('parallel lookups reserve budget once; daily quota blocks provider calls',a
   await assert.rejects(()=>service.lookupAccount(owner,'32345678901',async()=>{calls++;throw new Error();}),/额度已用完/);assert.equal(calls,2);
   process.env.MATRIX_VIDEO_DAILY_LIMIT='100';
 });
+test('mismatched public ID previews actual account, requires explicit confirmation and preserves server identity',async()=>{
+  const input='59015821',actual='returned_account',otherUid='7000000000000000006';let calls=0;
+  const fetcher:typeof fetch=async(url,init)=>{calls++;return String(url).includes('/app/v3/')?response(profile(actual,otherUid)):transport(input,otherUid)(url,init);};
+  const preview=await service.lookupAccount(owner,input,fetcher);assert.equal(preview.inputDouyinId,input);assert.equal(preview.profile.douyinId,actual);assert.equal(preview.profile.uid,otherUid);
+  const cached=await service.lookupAccount(owner,input,fetcher);assert.equal(cached.inputDouyinId,input);assert.equal(cached.lookupId,preview.lookupId);assert.equal(calls,2);
+  await assert.rejects(()=>service.addManagedAccount(owner,preview.lookupId),/核对资料并确认/);
+  assert.equal((await service.listManagedAccounts(owner)).some(a=>a.uid===otherUid),false);
+  const otherSession=await auth.loginOwner(process.env.MATRIX_OWNER_PASSWORD);await assert.rejects(()=>service.addManagedAccount(otherSession,preview.lookupId,true),/不属于当前会话/);
+  const saved=await service.addManagedAccount(owner,preview.lookupId,true);assert.equal(saved.douyinId,actual);assert.equal(saved.uid,otherUid);assert.equal(calls,2);
+  await assert.rejects(()=>service.addManagedAccount(owner,preview.lookupId,true),/已保存/);
+  await service.removeManagedAccount(owner,otherUid);
+  assert.throws(()=>provider.parseAccountProfile(profile(actual,otherUid),input,sec,uid,true),/不一致/);
+  assert.throws(()=>provider.parseAccountProfile(profile(actual,otherUid),input,'MS4wLjABAAAAwrong_account_00000001',otherUid,true),/不一致/);
+});
+
+test('unique ID resolution can preview a differing name while refresh stays strict',async()=>{
+  const fetcher:typeof fetch=async url=>String(url).includes('handler_user_profile_v2')?response({status_code:0,user_info:{unique_id:'new_account',sec_uid:sec}}):response(profile('new_account'));
+  const account=await provider.fetchAccount('old_account','account-fixture-key',fetcher);assert.equal(account.douyinId,'new_account');
+  await assert.rejects(()=>provider.fetchSavedAccount({...account,douyinId:'old_account'},'account-fixture-key',fetcher),/不一致/);
+});
+
 test('expired previews and logged-out sessions cannot save accounts; removal changes local records only',async()=>{
   const preview=await service.lookupAccount(owner,'42345678901',transport('42345678901','7000000000000000004'));
   await db.query('UPDATE account_lookups SET expires_at=$1 WHERE lookup_id=$2',['2000-01-01T00:00:00Z',preview.lookupId]);await assert.rejects(()=>service.addManagedAccount(owner,preview.lookupId),/已过期/);

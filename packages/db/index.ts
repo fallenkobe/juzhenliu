@@ -6,6 +6,8 @@ import { oauthSchema } from './oauth-schema';
 import { videoSchema } from './video-schema';
 import { accountSchema } from './account-schema';
 import { worksSchema } from './works-schema';
+import { videoSnapshotSchema } from './video-snapshot-schema';
+import { snapshotFromReport } from '../video/snapshots';
 import { root, dataDir } from '../config/env';
 
 export { root, dataDir };
@@ -162,6 +164,20 @@ export class Database implements Client {
       if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001005)');
       for(const statement of worksSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
       await tx.query("INSERT INTO schema_migrations VALUES('005_account_works',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
+    });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001006)');
+      const applied = await tx.query("SELECT version FROM schema_migrations WHERE version='006_video_query_snapshots'");
+      if (applied.length) return;
+      for(const statement of videoSnapshotSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      // Only the last retained report can be recovered; keep its actual query time.
+      const reports = await tx.query('SELECT video_id,report_json FROM video_reports');
+      for (const row of reports) {
+        const snapshot = snapshotFromReport(JSON.parse(row.report_json), 'saved-report');
+        if (snapshot) await tx.query('INSERT INTO video_query_snapshots VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
+          [row.video_id, snapshot.fetchedAt, JSON.stringify(snapshot)]);
+      }
+      await tx.query("INSERT INTO schema_migrations VALUES('006_video_query_snapshots',$1)", [new Date().toISOString()]);
     });
   }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }

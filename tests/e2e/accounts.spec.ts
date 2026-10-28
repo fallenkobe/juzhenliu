@@ -47,3 +47,21 @@ test('saved accounts search and exact large follower sorting stay local',async({
   await page.getByRole('button',{name:'清空账号搜索'}).click();await expect(page.locator('.am-card')).toHaveCount(4);
   await page.getByRole('button',{name:'查看作品',exact:true}).first().click();await expect(page.getByText('尚无保存的作品列表',{exact:false})).toBeVisible();await expect(page.getByRole('button',{name:'获取作品',exact:true})).toBeDisabled();expect(providerCalls).toBe(0);
 });
+
+test('mismatched Douyin ID displays actual profile and requires checked confirmation',async({page})=>{
+  let saves=0;let stored:unknown[]=[];
+  await page.route('**/api/videos/status',route=>route.fulfill({json:{signedIn:true,ownerConfigured:true,providerConfigured:true,originConfigured:true,dailyUsed:0,dailyLimit:100,cacheMinutes:30}}));
+  await page.route('**/api/videos/accounts',route=>{
+    if(route.request().method()==='GET')return route.fulfill({json:{accounts:stored}});
+    expect(route.request().postDataJSON()).toEqual({lookupId:'00000000-0000-4000-8000-000000000001',confirmMismatch:true});
+    saves++;stored=[{...profile,addedAt:profile.fetchedAt}];return route.fulfill({json:{account:stored[0]}});
+  });
+  await page.route('**/api/videos/accounts/lookup',route=>route.fulfill({json:{lookupId:'00000000-0000-4000-8000-000000000001',profile,inputDouyinId:'59015821',expiresAt:'2099-01-01T00:00:00Z',cached:false}}));
+  await page.goto('/accounts');await page.getByRole('button',{name:'添加账号',exact:true}).click();await page.getByLabel('抖音号',{exact:true}).fill('59015821');await page.getByRole('button',{name:'获取账号信息',exact:true}).click();
+  await expect(page.locator('.am-preview')).toContainText('输入抖音号：59015821；返回抖音号：12345678901');await expect(page.locator('.am-preview')).toContainText(profile.nickname);await expect(page.locator('.am-preview')).toContainText(profile.uid);
+  await expect(page.getByRole('link',{name:'打开抖音主页'})).toHaveAttribute('href','https://www.douyin.com/user/'+profile.secUid);
+  await expect(page.getByRole('button',{name:'确认添加此账号'})).toBeDisabled();expect(saves).toBe(0);
+  await page.getByLabel('我已核对，添加上述返回账号').check();await page.locator('.am-preview').getByRole('button',{name:'取消',exact:true}).click();await expect(page.locator('.am-preview')).toHaveCount(0);expect(saves).toBe(0);
+  await page.getByRole('button',{name:'获取账号信息',exact:true}).click();await expect(page.getByLabel('我已核对，添加上述返回账号')).not.toBeChecked();await expect(page.getByRole('button',{name:'确认添加此账号'})).toBeDisabled();
+  await page.getByLabel('我已核对，添加上述返回账号').check();await page.screenshot({path:'test-results/account-mismatch.png',fullPage:true});await page.getByRole('button',{name:'确认添加此账号'}).click();await expect(page.locator('.am-card')).toContainText(profile.douyinId);expect(saves).toBe(1);
+});

@@ -15,5 +15,5 @@ export interface AccountProfile {
   favorites: Count;
   fetchedAt: string;
 }
-export interface AccountPreview { lookupId: string; expiresAt: string; profile: AccountProfile; cached: boolean }
+export interface AccountPreview { inputDouyinId?: string; lookupId: string; expiresAt: string; profile: AccountProfile; cached: boolean }
 export interface ManagedAccount extends AccountProfile { addedAt: string }

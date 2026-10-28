@@ -59,7 +59,8 @@ const paths = [
   '/api/v1/douyin/web/fetch_user_profile_by_short_id',
   '/api/v1/douyin/web/handler_user_profile_v2',
   '/api/v1/douyin/app/v3/handler_user_profile',
-  '/api/v1/douyin/app/v3/fetch_user_post_videos'
+  '/api/v1/douyin/app/v3/fetch_user_post_videos',
+  '/api/v1/douyin/app/v3/fetch_one_video'
 ] as const;
 export async function requestTikHub(path: typeof paths[number], key: string, params: Record<string,string>, transport: TikHubTransport = fetch, post = false): Promise<unknown> {
   if (!paths.includes(path)) throw new AppError(400,'不支持的数据接口');
@@ -104,4 +105,26 @@ export async function fetchVideo(videoId: string, key: string, transport: TikHub
     section(async () => parseHistory(await requestTikHub('/api/v1/douyin/xingtu_v2/get_item_report_trend',key,{item_id:videoId},transport,true)))
   ]);
   return {totals,history};
+}
+
+// Public App detail counters are not the Xingtu play-count/report-trend metrics.
+export function parseImageTotals(value: unknown, workId: string) {
+  const d=object(value), a=object(d.aweme_detail), stats=object(a.statistics);
+  if ((d.status_code!==undefined&&d.status_code!==0)||a.aweme_id!==workId||(stats.aweme_id!==undefined&&stats.aweme_id!==workId)) throw new AppError(502,'图文详情不可用或作品身份不匹配','PROVIDER_RESPONSE');
+  const images=Array.isArray(a.images)?a.images:[];
+  if(a.aweme_type!==68&&!images.length)throw new AppError(502,'该作品未被确认为图文，请核对作品类型后重试','WORK_TYPE_MISMATCH');
+  const seconds=typeof a.create_time==='number'||typeof a.create_time==='string'?Number(a.create_time):NaN;
+  const published=new Date(seconds*1000);
+  const totals:VideoTotals={
+    title:typeof a.desc==='string'?a.desc.slice(0,2000):'',
+    publishedAt:seconds>0&&Number.isFinite(published.getTime())?published.toISOString():null,
+    durationSeconds:null,
+    // App play_count/exposure_count commonly return placeholder zero; do not claim actual views.
+    plays:null,likes:count(stats.digg_count),comments:count(stats.comment_count),shares:count(stats.share_count),collects:count(stats.collect_count)
+  };
+  return {totals,imageCount:images.length||undefined};
+}
+export async function fetchImageWork(workId:string,key:string,transport:TikHubTransport=fetch) {
+  const {totals,imageCount}=parseImageTotals(await requestTikHub('/api/v1/douyin/app/v3/fetch_one_video',key,{aweme_id:workId},transport),workId);
+  return {kind:'image' as const,source:'douyin-app-v3' as const,imageCount,historySupported:false,totals:{data:totals,error:null},history:{data:null,error:null}};
 }
