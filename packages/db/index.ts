@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { Pool, type PoolClient } from 'pg';
+import { publishingSchema } from './publishing-schema';
 import { oauthSchema } from './oauth-schema';
 import { videoSchema } from './video-schema';
 import { accountSchema } from './account-schema';
@@ -178,6 +179,11 @@ export class Database implements Client {
           [row.video_id, snapshot.fetchedAt, JSON.stringify(snapshot)]);
       }
       await tx.query("INSERT INTO schema_migrations VALUES('006_video_query_snapshots',$1)", [new Date().toISOString()]);
+    });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001007)');
+      for(const statement of publishingSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
+      await tx.query("INSERT INTO schema_migrations VALUES('007_publishing',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
     });
   }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }

@@ -1,8 +1,26 @@
 {
   "compilerOptions": {
-    "target": "ES2022", "lib": ["ES2023", "DOM"], "module": "ESNext",
-    "moduleResolution": "Bundler", "strict": true, "noEmit": true,
-    "esModuleInterop": true, "skipLibCheck": true, "types": ["node"]
+    "target": "ES2022",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["packages/**/*.ts", "apps/worker/**/*.ts", "apps/assistant/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "apps/worker/**/*.ts",
+    "apps/assistant/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "apps/publisher/**/*.ts"
+  ]
 }
