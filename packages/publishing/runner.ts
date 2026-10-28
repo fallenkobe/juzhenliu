@@ -1,15 +1,17 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { stat } from "node:fs/promises";
 import { root } from "../config/env";
 import { OWNER_ID, UPSTREAM_REVISION, unseal } from "./security";
 import { assetDirectory } from "./service";
 import * as queue from "./queue";
-export async function runOperation(op: any, instanceId: string) {
+export async function runOperation(op: any, instanceId: string, spawnProcess: typeof spawn = spawn) {
   const python = process.env.MATRIX_PUBLISHING_PYTHON || "python3";
   const upstream = process.env.MATRIX_SAU_ROOT;
-  if (!upstream) {
+  const isLogin = op.kind === "login" || op.kind === "check";
+  if (!isLogin && !upstream) {
     await queue.finish(op.id, op.lease_token, {
       state: "failed",
       detail: "未配置发布引擎目录 MATRIX_SAU_ROOT",
@@ -53,12 +55,18 @@ export async function runOperation(op: any, instanceId: string) {
     LANG: "C.UTF-8",
     MATRIX_SAU_ROOT: upstream,
     PYTHONUNBUFFERED: "1",
+    SystemRoot: process.env.SystemRoot,
+    USERPROFILE: process.env.USERPROFILE,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    MATRIX_LOGIN_BROWSER_CHANNEL: process.env.MATRIX_LOGIN_BROWSER_CHANNEL || "msedge",
   };
   if (process.env.PLAYWRIGHT_BROWSERS_PATH)
     env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH;
-  const child = spawn(
-    python,
-    ["-I", path.join(root, "scripts/publishing/sau_bridge.py")],
+  const child = spawnProcess(
+    isLogin ? process.execPath : python,
+    isLogin ? ["--import", pathToFileURL(path.join(root, "node_modules/tsx/dist/loader.mjs")).href, path.join(root, "scripts/publishing/login-bridge.ts")] : ["-I", path.join(root, "scripts/publishing/sau_bridge.py")],
     {
       env,
       stdio: ["pipe", "pipe", "ignore"],
@@ -72,7 +80,15 @@ export async function runOperation(op: any, instanceId: string) {
     if (child.pid) {
       try {
         if (process.platform !== "win32") process.kill(-child.pid, "SIGTERM");
-        else child.kill();
+        else if (isLogin) {
+          // EOF asks the login bridge to close its browser. Bound cleanup if navigation hangs.
+          child.stdin.end();
+          const cleanup = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null)
+              spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+          }, 5000);
+          cleanup.unref();
+        } else child.kill();
       } catch {}
     }
   };
@@ -81,6 +97,7 @@ export async function runOperation(op: any, instanceId: string) {
     detail: string;
     credential?: unknown;
     image?: string;
+    checkStatus?: "expired" | "verification_required" | "check_failed";
   }) => {
     if (finished) return;
     finished = true;
@@ -102,17 +119,20 @@ export async function runOperation(op: any, instanceId: string) {
       detail: "执行超过 15 分钟，已停止；发布结果需人工核实",
     });
   }, 910000);
-  let polling = false;
+  let polling = false, lastHeartbeat = 0;
   const timer = setInterval(() => {
     if (polling || finished) return;
     polling = true;
     void (async () => {
-      if (!(await queue.heartbeat(instanceId, op.id, op.lease_token))) {
-        finished = true;
-        clearInterval(timer);
-        clearTimeout(deadline);
-        stop();
-        return;
+      if (Date.now() - lastHeartbeat >= 1000) {
+        if (!(await queue.heartbeat(instanceId, op.id, op.lease_token))) {
+          finished = true;
+          clearInterval(timer);
+          clearTimeout(deadline);
+          stop();
+          return;
+        }
+        lastHeartbeat = Date.now();
       }
       const command = await queue.consumeControl(op.id, op.lease_token);
       if (command?.action === "cancel") {
@@ -133,19 +153,19 @@ export async function runOperation(op: any, instanceId: string) {
       .finally(() => {
         polling = false;
       });
-  }, 1000);
+  }, isLogin ? 250 : 1000);
   child.stdin.on("error", () => {});
   child.on("error", () => {
     void complete({
       state: "failed",
-      detail: "无法启动 Python 发布执行器，请检查安装路径",
+      detail: "无法启动浏览器执行器，请检查安装路径",
     });
   });
   let bufferSize = 0;
   const lines = createInterface({ input: child.stdout });
   child.stdout.on("data", (chunk) => {
     bufferSize += chunk.length;
-    if (bufferSize > 30 * 1024 * 1024)
+    if (bufferSize > (isLogin ? 128 : 30) * 1024 * 1024)
       void complete({
         state: op.kind === "publish" ? "unknown" : "failed",
         detail: "执行器输出异常，已停止",
@@ -170,9 +190,10 @@ export async function runOperation(op: any, instanceId: string) {
           await complete({
             state: value.state,
             detail: String(value.detail || "").slice(0, 300),
-            ...(op.kind === "login"
+            ...(isLogin
               ? { credential: value.credential, image: value.image }
               : {}),
+            ...(op.kind === "check" && ["expired", "verification_required", "check_failed"].includes(value.checkStatus) ? { checkStatus: value.checkStatus } : {}),
           });
         } else {
           if (value.type === "submitting") submitting = true;

@@ -185,6 +185,13 @@ export class Database implements Client {
       for(const statement of publishingSchema.split(';').filter(s=>s.trim())) await tx.query(statement);
       await tx.query("INSERT INTO schema_migrations VALUES('007_publishing',$1) ON CONFLICT DO NOTHING", [new Date().toISOString()]);
     });
+    await this.transaction(null, async tx => {
+      if(this.pool) await tx.query('SELECT pg_advisory_xact_lock(91001008)');
+      if ((await tx.query("SELECT version FROM schema_migrations WHERE version='008_publishing_login'")).length) return;
+      await tx.query('ALTER TABLE publishing_accounts ADD COLUMN last_checked_at TEXT');
+      await tx.query('ALTER TABLE publishing_accounts ADD COLUMN session_saved_at TEXT');
+      await tx.query("INSERT INTO schema_migrations VALUES('008_publishing_login',$1)", [new Date().toISOString()]);
+    });
   }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }
 }

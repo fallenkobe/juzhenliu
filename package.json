@@ -21,7 +21,8 @@
     "test": "tsx --test tests/business.test.ts tests/douyin-auth.test.ts tests/assistant.test.ts tests/video.test.ts tests/accounts.test.ts tests/works.test.ts tests/images.test.ts tests/image-analysis.test.ts tests/video-snapshots.test.ts tests/video-heat.test.ts tests/publishing.test.ts",
     "test:e2e": "playwright test",
     "publisher": "tsx apps/publisher/index.ts",
-    "test:publishing": "tsx --test tests/publishing.test.ts"
+    "test:publishing": "tsx --test tests/publishing.test.ts",
+    "test:publishing:browser": "tsx --test tests/publishing-login-browser.test.ts"
   },
   "dependencies": {
     "exceljs": "4.4.0",

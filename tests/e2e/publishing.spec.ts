@@ -1,6 +1,14 @@
 import { test, expect } from "@playwright/test";
-const origin = "http://127.0.0.1:3100";
+const origin = process.env.E2E_PRODUCTION === "1" ? "https://video-e2e.example" : "http://127.0.0.1:3100";
 async function login(page: any) {
+  if (process.env.E2E_PRODUCTION === "1") {
+    for (const resource of ["**/api/videos/session", "**/api/publishing/accounts"]) {
+      await page.route(resource, async (route: any) => {
+        const response = await route.fetch({ headers: { ...route.request().headers(), origin } });
+        await route.fulfill({ response });
+      });
+    }
+  }
   await page.goto("/publishing");
   await page
     .getByLabel("矩阵流登录密码", { exact: true })
@@ -125,4 +133,95 @@ test("preview and unknown states require distinct explicit confirmation without 
   await page.getByLabel("我已在抖音创作者中心人工核实该任务结果").check();
   await resolve.click();
   expect(actions).toEqual(["confirm_publish", "resolve_not_published"]);
+});
+
+test("login dialog supports method changes and clears submitted password", async ({ page }) => {
+  const id = "00000000-0000-4000-8000-000000000002";
+  let method = "password";
+  const actions: Record<string, unknown>[] = [];
+  await page.route("**/api/publishing/overview", route => route.fulfill({ json: {
+    status: { enabled: false, loginEnabled: true, encryptionConfigured: true, workerOnline: true },
+    accounts: [{ id, label: "登录测试", expected_handle: "fixture", state: "disconnected" }], assets: [],
+    operations: [{ id, account_id: id, label: "登录测试", kind: "login", state: "waiting_verification", detail: "合成登录页面", created_at: new Date().toISOString() }],
+  } }));
+  await page.route("**/api/publishing/operations/" + id, route => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON(); actions.push(body);
+      if (body.action === "login_method") method = body.method;
+      return route.fulfill({ json: { ok: true } });
+    }
+    return route.fulfill({ json: { id, accountId: id, kind: "login", state: method === "qr" ? "waiting_scan" : "waiting_verification", loginMethod: method, detail: "合成登录页面", image: null } });
+  });
+  await login(page);
+  await page.getByRole("button", { name: "查看 / 处理" }).click();
+  await page.getByLabel("登录手机号", { exact: true }).fill("13800000000");
+  await page.getByLabel("抖音密码", { exact: true }).fill("fixture-secret");
+  const submit = page.getByRole("button", { name: "登录抖音", exact: true });
+  await expect(submit).toBeDisabled();
+  await page.getByLabel(/我已阅读并同意抖音/).check();
+  await submit.click();
+  await expect(page.getByLabel("抖音密码", { exact: true })).toHaveValue("");
+  expect(actions[0]).toMatchObject({ action: "login_password", phone: "13800000000", password: "fixture-secret", confirmed: true });
+  await page.getByRole("button", { name: "验证码", exact: true }).click();
+  await expect(page.getByLabel("登录短信验证码", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "获取短信验证码（间隔60秒）", exact: true }).click();
+  expect(actions.at(-1)?.action).toBe("request_sms");
+  await page.getByRole("button", { name: "扫码", exact: true }).click();
+  await expect(page.getByRole("button", { name: "刷新二维码" })).toBeVisible();
+  await expect(page.getByLabel("抖音密码", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "取消此任务", exact: true })).toHaveCount(0);
+  await page.screenshot({ path: "test-results/publishing-login-dialog.png", fullPage: true });
+  await page.getByRole("button", { name: "关闭任务详情" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(actions.at(-1)?.action).toBe("close_login");
+  await page.getByRole("button", { name: "查看 / 处理" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(actions.filter(a => a.action === "close_login")).toHaveLength(2);
+});
+
+test("additional identity verification replaces normal login and requires explicit user actions", async ({ page }) => {
+  const id = "00000000-0000-4000-8000-000000000003";
+  let stage = "choose", state = "waiting_verification";
+  const preview = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  let reusedPreview = false;
+  const actions: Record<string, unknown>[] = [];
+  await page.route("**/api/publishing/overview", route => route.fulfill({ json: {
+    status: { enabled: false, loginEnabled: true, encryptionConfigured: true, workerOnline: true }, accounts: [{ id, label: "验证测试", expected_handle: "fixture", state: "disconnected" }], assets: [],
+    operations: [{ id, account_id: id, label: "验证测试", kind: "login", state, detail: "合成追加验证", created_at: new Date().toISOString() }],
+  } }));
+  await page.route("**/api/publishing/operations/" + id, route => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON(); actions.push(body);
+      if (body.action === "identity_receive_sms") stage = "manual";
+      if (body.action === "identity_code") state = "awaiting_identity";
+      return route.fulfill({ json: { ok: true } });
+    }
+    const cached = route.request().headers()["x-matrix-image-hash"] === "fixture-preview";
+    reusedPreview ||= cached;
+    return route.fulfill({ json: { id, accountId: id, kind: "login", state, loginMethod: "qr", imageHash: "fixture-preview", ...(cached ? {} : { image: preview }), detail: "合成追加验证", identityChallenge: state === "awaiting_identity" ? null : { stage, receiveSms: stage === "choose", submitCode: stage === "sms", requestSms: stage === "sms", face: false, sendSms: false } } });
+  });
+  await login(page);
+  await page.getByRole("button", { name: "查看 / 处理" }).click();
+  await expect(page.getByRole("heading", { name: "需要身份验证" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新二维码" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "接收身份验证短信" })).toBeDisabled();
+  expect(actions).toEqual([]);
+  await page.getByLabel(/我是当前账号本人/).check();
+  await page.getByRole("button", { name: "接收身份验证短信" }).click();
+  await expect(page.getByLabel("身份验证码", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "提交身份验证码" })).toBeDisabled();
+  await expect(page.getByText(/正在等待抖音验证码输入控件就绪/)).toBeVisible();
+  await page.getByLabel("身份验证码", { exact: true }).fill("123456");
+  stage = "sms";
+  await expect(page.getByRole("button", { name: "提交身份验证码" })).toBeEnabled();
+  await expect(page.getByLabel("身份验证码", { exact: true })).toHaveValue("123456");
+  expect(reusedPreview).toBe(true);
+  await expect(page.getByRole("dialog").locator("img")).toHaveAttribute("src", preview);
+  await page.screenshot({ path: "test-results/publishing-identity.png" });
+  await page.getByRole("button", { name: "提交身份验证码" }).click();
+  await expect(page.getByRole("button", { name: "确认账号并保存登录态" })).toBeVisible();
+  expect(actions.map(a => a.action)).toEqual(["identity_receive_sms", "identity_code"]);
+  expect(actions[1]).toMatchObject({ code: "123456", confirmed: true });
 });

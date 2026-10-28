@@ -10,6 +10,22 @@ export function enabled() {
     process.env.MATRIX_PUBLISHING_ENABLED === "1" && !process.env.DATABASE_URL
   );
 }
+export function loginEnabled() {
+  return (process.env.MATRIX_PUBLISHING_LOGIN_ENABLED === "1" || enabled()) && !process.env.DATABASE_URL;
+}
+export function requireLoginEnabled() {
+  if (!loginEnabled() || !encryptionConfigured())
+    throw new AppError(503, "登录执行未启用或凭证加密密钥未配置", "LOGIN_DISABLED");
+}
+export function validateCredential(value: unknown) {
+  const state = value as { cookies?: { name: string; value: string; domain: string }[]; origins?: { origin: string }[] };
+  if (!state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || JSON.stringify(state).length > 1024 * 1024 ||
+      !state.cookies.some(c => ["sessionid", "sessionid_ss"].includes(c.name) && typeof c.value === "string" && c.value.length > 0) ||
+      state.cookies.some(c => typeof c.domain !== "string" || !/(^|\.)douyin\.com$/.test(c.domain)) ||
+      state.origins.some(o => { try { const u = new URL(o.origin); return u.protocol !== "https:" || !/(^|\.)douyin\.com$/.test(u.hostname); } catch { return true; } }))
+    throw new Error("Invalid Douyin session");
+  return value;
+}
 export function requireEnabled() {
   if (!enabled() || !encryptionConfigured())
     throw new AppError(

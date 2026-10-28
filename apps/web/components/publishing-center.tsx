@@ -9,11 +9,13 @@ import {
   type PublishingAsset,
   type PublishingOperation,
   type OperationState,
+  type IdentityChallenge,
 } from "../../../packages/publishing/types";
 import "./publishing-center.css";
 interface Overview {
   status: {
     enabled: boolean;
+    loginEnabled: boolean;
     encryptionConfigured: boolean;
     workerOnline: boolean;
   };
@@ -27,7 +29,10 @@ interface Detail {
   kind: string;
   detail: string;
   image: string | null;
+  imageHash?: string | null;
   accountId: string;
+  loginMethod: "qr" | "sms" | "password" | null;
+  identityChallenge?: IdentityChallenge | null;
 }
 async function api<T>(
   resource: string,
@@ -73,13 +78,45 @@ export default function PublishingCenter() {
     [detail, setDetail] = useState<Detail | null>(null),
     [reviewed, setReviewed] = useState(false),
     [code, setCode] = useState("");
+  const [phone, setPhone] = useState(""), [password, setPassword] = useState(""),
+    [terms, setTerms] = useState(false), [loginMethod, setLoginMethod] = useState("qr");
+  const [identityConsent, setIdentityConsent] = useState(false);
+  const [identitySmsRequested, setIdentitySmsRequested] = useState(false);
   const request = useRef<{ key: string; fingerprint: string } | null>(null),
     modal = useRef<HTMLDivElement>(null),
     closingFocus = useRef<HTMLElement | null>(null);
+  const closing = useRef(false), closeHandler = useRef<() => void>(() => {});
+  const imageCache = useRef<{ id: string; hash: string; image: string } | null>(null);
+  const readDetail = useCallback(async (id: string, signal?: AbortSignal) => {
+    const cached = imageCache.current?.id === id ? imageCache.current : null;
+    const value = await api<Detail>("operations/" + id, undefined, {
+      signal, headers: cached ? { "X-Matrix-Image-Hash": cached.hash } : {},
+    });
+    if (value.image === undefined) value.image = cached?.image ?? null;
+    if (value.image && value.imageHash) imageCache.current = { id, hash: value.imageHash, image: value.image };
+    else if (!value.image) imageCache.current = null;
+    return value;
+  }, []);
   const refresh = useCallback(async () => {
     const result = await api<Overview>("overview");
     setData(result);
   }, []);
+  async function closeDetail() {
+    if (!detailId || closing.current) return;
+    closing.current = true;
+    try {
+      const current = detail?.id === detailId ? detail : await api<Detail>("operations/" + detailId);
+      if (current.kind === "login") {
+        const result = await api<{ abandoned: boolean }>("operations/" + detailId, { action: "close_login" });
+        if (result.abandoned) setMessage("已放弃本次登录");
+      }
+      setPassword(""); setCode(""); setPhone("");
+      setDetailId(null);
+      await refresh();
+    } catch (e) { setError("关闭操作未完成：" + (e as Error).message); }
+    finally { closing.current = false; }
+  }
+  closeHandler.current = () => { void closeDetail(); };
   useEffect(() => {
     let active = true;
     const update = () => {
@@ -102,27 +139,40 @@ export default function PublishingCenter() {
     setDetail(null);
     setReviewed(false);
     setCode("");
+    setPhone("");
+    setPassword("");
+    setTerms(false);
+    setIdentityConsent(false);
+    setIdentitySmsRequested(false);
     if (!detailId) return;
     let active = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
     const update = async () => {
       try {
-        const value = await api<Detail>("operations/" + detailId);
+        const value = await readDetail(detailId, controller.signal);
         if (active) setDetail(value);
       } catch (e) {
         if (active) setError((e as Error).message);
+      } finally {
+        // Never pile up requests on a slow connection; hidden tabs poll less often.
+        if (active) timer = setTimeout(() => void update(), document.hidden ? 3000 : 500);
       }
     };
     void update();
-    const timer = setInterval(() => void update(), 1500);
     return () => {
       active = false;
-      clearInterval(timer);
+      controller.abort();
+      clearTimeout(timer);
+      imageCache.current = null;
     };
-  }, [detailId]);
+  }, [detailId, readDetail]);
   useEffect(() => {
     setReviewed(false);
     setCode("");
   }, [detail?.state]);
+  useEffect(() => { setPassword(""); setCode(""); }, [detail?.state, detail?.loginMethod]);
+  useEffect(() => { setPassword(""); }, [detail?.identityChallenge?.stage]);
   useEffect(() => {
     if (!detailId) return;
     closingFocus.current = document.activeElement as HTMLElement;
@@ -130,7 +180,7 @@ export default function PublishingCenter() {
     document.body.style.overflow = "hidden";
     modal.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDetailId(null);
+      if (e.key === "Escape") closeHandler.current();
       if (e.key === "Tab") {
         const items = Array.from(
           modal.current?.querySelectorAll<HTMLElement>(
@@ -169,17 +219,23 @@ export default function PublishingCenter() {
       setBusy(false);
     }
   }
-  async function control(action: string) {
+  async function control(action: string, extra: Record<string, unknown> = {}) {
     if (!detailId) return;
-    await api("operations/" + detailId, {
+    const payload = {
       action,
-      confirmed: reviewed,
-      ...(action === "sms_code" ? { code } : {}),
-    });
+      confirmed: action.startsWith("identity_") ? identityConsent : detail?.kind === "login" && ["login_password", "login_sms", "request_sms"].includes(action) ? terms : reviewed,
+      ...(["sms_code", "login_sms", "identity_code"].includes(action) ? { code } : {}),
+      ...(["request_sms", "login_sms", "login_password"].includes(action) && detail?.kind === "login" ? { phone } : {}),
+      ...(action === "login_password" ? { password } : {}),
+      ...extra,
+    };
+    setPassword("");
     setCode("");
+    await api("operations/" + detailId, payload);
+    if (action === "identity_receive_sms" || action === "identity_request_sms") setIdentitySmsRequested(true);
     setReviewed(false);
     setMessage("操作已提交");
-    const value = await api<Detail>("operations/" + detailId);
+    const value = await readDetail(detailId);
     setDetail(value);
   }
   async function publish() {
@@ -210,6 +266,7 @@ export default function PublishingCenter() {
     setConfirmed(false);
   }
   const ready = data?.status.enabled && data.status.encryptionConfigured;
+  const loginReady = data?.status.loginEnabled && data.status.encryptionConfigured && data.status.workerOnline;
   return (
     <div className="app-shell">
       <WorkspaceSidebar
@@ -300,7 +357,7 @@ export default function PublishingCenter() {
           )}
           {!ready && (
             <p className="pc-notice">
-              当前未启用真实执行。可先整理发布账号和素材；管理员完成加密密钥、固定版本引擎及执行器配置后才能扫码和发布。
+              {loginReady ? "账号登录已启用；真实视频发布暂未开启。" : "账号登录需服务器配置加密密钥并启动执行器。真实视频发布单独启用。"}
             </p>
           )}
           <section className="panel pc-section">
@@ -352,8 +409,11 @@ export default function PublishingCenter() {
                 checked={loginConsent}
                 onChange={(e) => setLoginConsent(e.target.checked)}
               />
-              我同意为所选自有账号扫码，并将登录态加密保存在此服务器；可随时断开。
+              我同意登录所选自有账号，并将登录态加密保存在此服务器；可随时断开。
             </label>
+            <label>登录方式 <select aria-label="登录方式" value={loginMethod} onChange={e => setLoginMethod(e.target.value)}>
+              <option value="qr">抖音扫码</option><option value="sms">手机号验证码</option><option value="password">手机号密码</option>
+            </select></label>
             <div className="pc-accounts">
               {data?.accounts.map((a) => (
                 <article key={a.id} className="pc-account">
@@ -366,31 +426,33 @@ export default function PublishingCenter() {
                       }
                     >
                       {a.state === "ready"
-                        ? "已登录 · 所有者已核对"
+                        ? "上次检查已登录 · 所有者已核对"
                         : a.state === "expired"
                           ? "需重新登录"
-                          : "未连接"}
+                          : a.state === "check_failed" ? "检查失败 · 可重试" : a.state === "verification_required" ? "需安全验证" : "未连接"}
                     </span>
+                    {a.last_checked_at && <small>最近检查：{new Date(a.last_checked_at).toLocaleString()}</small>}
+                    {a.session_saved_at && <small>登录态保存：{new Date(a.session_saved_at).toLocaleString()}</small>}
                   </div>
                   <div className="pc-actions">
                     <button
                       className="secondary"
-                      disabled={busy || !ready || !loginConsent}
+                      disabled={busy || !loginReady || !loginConsent}
                       onClick={() =>
                         void act(async () => {
                           const r = await api<{ operationId: string }>(
                             "accounts/" + a.id + "/login",
-                            { consent: loginConsent },
+                            { consent: loginConsent, method: loginMethod },
                           );
                           setDetailId(r.operationId);
                         })
                       }
                     >
-                      扫码登录
+                      {loginMethod === "qr" ? "扫码登录" : loginMethod === "sms" ? "验证码登录" : "密码登录"}
                     </button>
                     <button
                       className="secondary"
-                      disabled={busy || !ready || a.state === "disconnected"}
+                      disabled={busy || !loginReady || a.state === "disconnected"}
                       onClick={() =>
                         void act(async () => {
                           const r = await api<{ operationId: string }>(
@@ -401,7 +463,7 @@ export default function PublishingCenter() {
                         })
                       }
                     >
-                      检查
+                      检查登录状态
                     </button>
                     <button
                       className="text-button"
@@ -575,7 +637,7 @@ export default function PublishingCenter() {
           <section id="publishing-tasks" className="panel pc-section">
             <h2>任务记录</h2>
             <p className="muted">
-              关闭网页不会取消任务。需要扫码或确认时会等待；超时停止，不自动重发。这里只显示最近
+              登录失败或超时会结束；关闭登录窗口会放弃未保存的登录。发布任务需单独处理。这里只显示最近
               100 条。
             </p>
             <div className="table-scroll">
@@ -602,7 +664,7 @@ export default function PublishingCenter() {
                           · {new Date(o.created_at).toLocaleString()}
                         </small>
                       </td>
-                      <td>{stateLabels[o.state]}</td>
+                      <td>{o.state === "submitted" && o.kind !== "publish" ? "已完成" : stateLabels[o.state]}</td>
                       <td>{o.detail}</td>
                       <td>
                         <button
@@ -630,11 +692,11 @@ export default function PublishingCenter() {
             aria-label="处理发布任务"
           >
             <div className="dialog-heading">
-              <h2>{detail ? stateLabels[detail.state] : "加载任务…"}</h2>
+              <h2>{detail?.identityChallenge ? "需要身份验证" : detail ? detail.state === "submitted" && detail.kind !== "publish" ? "已完成" : stateLabels[detail.state] : "加载任务…"}</h2>
               <button
                 className="icon-button"
                 aria-label="关闭任务详情"
-                onClick={() => setDetailId(null)}
+                onClick={() => void closeDetail()}
               >
                 <X />
               </button>
@@ -661,12 +723,45 @@ export default function PublishingCenter() {
                 alt="此任务当前抖音浏览器页面，仅供所有者核对"
               />
             )}
-            {detail?.state === "waiting_scan" && (
+            {detail?.state === "waiting_scan" && !detail.identityChallenge && (
               <p>
                 请用目标账号扫描页面中的二维码。验证码或其他安全验证可能需要额外处理。
               </p>
             )}
-            {detail?.state === "waiting_verification" && (
+            {detail?.identityChallenge && <div className="pc-form">
+              <p>请继续当前抖音会话的身份验证。截图仅用于查看，请使用下面的操作按钮。</p>
+              <label className="pc-check"><input type="checkbox" checked={identityConsent} onChange={e => setIdentityConsent(e.target.checked)} />我是当前账号本人，同意按所选方式完成身份验证；短信操作可能向绑定手机发送验证码。</label>
+              <div className="pc-actions">
+                {detail.identityChallenge.receiveSms && <button className="primary" disabled={busy || !identityConsent} onClick={() => void act(() => control("identity_receive_sms"))}>接收身份验证短信</button>}
+                {detail.identityChallenge.face && <button className="secondary" disabled={busy || !identityConsent} onClick={() => void act(() => control("identity_face"))}>查看手机刷脸验证</button>}
+                {detail.identityChallenge.sendSms && <button className="secondary" disabled={busy || !identityConsent} onClick={() => void act(() => control("identity_send_sms"))}>查看发送短信验证说明</button>}
+                {detail.identityChallenge.requestSms && <button className="secondary" disabled={busy || !identityConsent} onClick={() => void act(() => control("identity_request_sms"))}>发送 / 重发身份验证码</button>}
+              </div>
+              {(detail.identityChallenge.submitCode || detail.identityChallenge.stage === "sms" || identitySmsRequested) && <>
+                <label>身份验证码<input aria-label="身份验证码" autoComplete="one-time-code" inputMode="numeric" maxLength={8} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} /></label>
+                {!detail.identityChallenge.submitCode && <p role="status" className="muted">正在等待抖音验证码输入控件就绪，可先填写。若持续无法提交，说明平台控件尚未识别，请勿重复发送短信。</p>}
+                <button className="primary" disabled={busy || !identityConsent || !detail.identityChallenge.submitCode || code.length < 4} onClick={() => void act(() => control("identity_code"))}>提交身份验证码</button>
+              </>}
+              <p className="muted">刷脸或主动发送短信需本人按抖音页面指引在手机完成。验证通过后自动继续登录，再核对账号并保存。若平台页面没有可用入口，可关闭窗口放弃；不要切换普通登录方式或刷新二维码。</p>
+            </div>}
+            {detail?.kind === "login" && !detail.identityChallenge && ["waiting_scan", "waiting_verification"].includes(detail.state) && (
+              <div className="pc-form">
+                <div className="pc-actions" aria-label="切换登录方式">
+                  {(["qr", "sms", "password"] as const).map(method => <button key={method} className={detail.loginMethod === method ? "primary" : "secondary"} disabled={busy} onClick={() => void act(() => control("login_method", { method }))}>{method === "qr" ? "扫码" : method === "sms" ? "验证码" : "密码"}</button>)}
+                </div>
+                {detail.loginMethod === "qr" ? <button className="secondary" disabled={busy} onClick={() => void act(() => control("refresh_qr"))}>刷新二维码</button> : <>
+                  <label>中国大陆手机号（+86）<input aria-label="登录手机号" type="tel" autoComplete="off" value={phone} maxLength={11} onChange={e => setPhone(e.target.value.replace(/\D/g, ""))} /></label>
+                  {detail.loginMethod === "password" ? <label>抖音密码<input aria-label="抖音密码" type="password" autoComplete="off" value={password} maxLength={128} onChange={e => setPassword(e.target.value)} /></label> : <label>短信验证码<input aria-label="登录短信验证码" autoComplete="one-time-code" inputMode="numeric" value={code} maxLength={8} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} /></label>}
+                  <label className="pc-check"><input type="checkbox" checked={terms} onChange={e => setTerms(e.target.checked)} />我已阅读并同意抖音<a href="https://www.douyin.com/agreements/?id=6773906068725565448" target="_blank" rel="noreferrer">用户协议</a>和<a href="https://www.douyin.com/agreements/?id=6773901168964798477" target="_blank" rel="noreferrer">隐私政策</a></label>
+                  <div className="pc-actions">
+                    {detail.loginMethod === "sms" && <button className="secondary" disabled={busy || !terms || !/^1\d{10}$/.test(phone)} onClick={() => void act(() => control("request_sms"))}>获取短信验证码（间隔60秒）</button>}
+                    <button className="primary" disabled={busy || !terms || !/^1\d{10}$/.test(phone) || (detail.loginMethod === "password" ? !password : code.length < 4)} onClick={() => void act(() => control(detail.loginMethod === "password" ? "login_password" : "login_sms"))}>登录抖音</button>
+                  </div>
+                </>}
+                <p className="muted">密码和验证码仅用于当次登录，不作为长期凭证保存。短信方式遵循抖音“登录/注册”流程，未注册号码可能创建抖音账号。平台如要求滑块或额外安全验证，请切换扫码或取消后重试。登录态可能被平台撤销，请通过“检查登录状态”确认。</p>
+              </div>
+            )}
+            {detail?.state === "waiting_verification" && detail.kind !== "login" && (
               <div className="pc-actions">
                 <button
                   className="secondary"
@@ -729,7 +824,7 @@ export default function PublishingCenter() {
                   </button>
                 </>
               )}
-            {detail &&
+            {detail && detail.kind !== "login" &&
               [
                 "queued",
                 "running",
@@ -779,7 +874,7 @@ export default function PublishingCenter() {
                 </div>
               </>
             )}
-            <p className="muted">关闭这个窗口不会取消后台任务。</p>
+            <p className="muted">{detail?.kind === "login" ? "关闭窗口即放弃尚未保存的本次登录，已保存的登录态会保留。" : "关闭这个窗口不会取消后台任务。"}</p>
           </div>
         </div>
       )}

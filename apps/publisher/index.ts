@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { db } from "../../packages/db/index";
-import { requireEnabled } from "../../packages/publishing/security";
+import { requireLoginEnabled } from "../../packages/publishing/security";
 import { claim } from "../../packages/publishing/queue";
 import { runOperation } from "../../packages/publishing/runner";
-requireEnabled();
+requireLoginEnabled();
 await db.migrate();
 const instance = randomUUID();
 let stopped = false;

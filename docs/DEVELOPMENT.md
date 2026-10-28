@@ -209,3 +209,7 @@ Remove-Item Env:E2E_PRODUCTION
 - **SQLite experimental 提示**：已验证 Node 版本可能输出此警告；区分警告与真正的退出错误。
 
 首次交接无需旧会话：从仓库根 `AGENTS.md` 开始，再读项目记忆即可。
+
+## 发布账号登录（2026-10-28）
+
+/publishing 登录更新见 [PUBLISHING.md](PUBLISHING.md) 顶部。只启用登录需要本机MATRIX_PUBLISHING_LOGIN_ENABLED=1、独立加密密钥和已安装Edge，运行Web及npm run publisher。不需要Python发布引擎；MATRIX_PUBLISHING_ENABLED=0保持真实发布关闭。环境密钥、登录态各电脑独立配置，禁止经Git同步。平台公开登录面板已连接，真实账号成功登录/会话重启恢复尚待用户验收。

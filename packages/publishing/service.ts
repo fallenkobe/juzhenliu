@@ -12,6 +12,9 @@ import {
   seal,
   unseal,
   safeImage,
+  loginEnabled,
+  requireLoginEnabled,
+  validateCredential,
 } from "./security";
 import {
   activeStates,
@@ -24,7 +27,7 @@ export const stamp = () => new Date().toISOString();
 const id = () => randomUUID();
 const owner = OWNER_ID;
 const accountColumns =
-  "id,label,expected_handle,state,epoch,identity_confirmed_at,created_at,updated_at";
+  "id,label,expected_handle,state,epoch,identity_confirmed_at,last_checked_at,session_saved_at,created_at,updated_at";
 export const assetDirectory = () => path.join(dataDir, "publishing", "assets");
 export function identifier(value: unknown) {
   if (typeof value !== "string" || !/^[a-f0-9-]{36}$/.test(value))
@@ -57,6 +60,7 @@ export async function status(token: string | undefined) {
   );
   return {
     enabled: enabled(),
+    loginEnabled: loginEnabled(),
     encryptionConfigured: encryptionConfigured(),
     workerOnline: !!w && w.lease_until > stamp(),
     workerUpdatedAt: w?.updated_at ?? null,
@@ -126,7 +130,7 @@ export async function disconnectAccount(
       [owner, accountId, stamp()],
     );
     await tx.query(
-      "UPDATE publishing_accounts SET credential_ciphertext=NULL,state='disconnected',epoch=epoch+1,identity_confirmed_at=NULL,updated_at=$3 WHERE owner_id=$1 AND id=$2",
+      "UPDATE publishing_accounts SET credential_ciphertext=NULL,state='disconnected',epoch=epoch+1,identity_confirmed_at=NULL,last_checked_at=NULL,session_saved_at=NULL,updated_at=$3 WHERE owner_id=$1 AND id=$2",
       [owner, accountId, stamp()],
     );
     return { ok: true };
@@ -139,9 +143,11 @@ export async function startAccountOperation(
   body: Record<string, unknown>,
 ) {
   await requireOwner(token);
-  requireEnabled();
+  requireLoginEnabled();
   if (kind === "login" && body.consent !== true)
-    throw new AppError(400, "请确认扫码并将登录态加密保存在此服务器");
+    throw new AppError(400, "请确认登录并将登录态加密保存在此服务器");
+  const method = body.method ?? "qr";
+  if (!["qr", "sms", "password"].includes(String(method))) throw new AppError(400, "登录方式无效");
   return db.transaction(null, async (tx) => {
     const a = await account(tx, accountId);
     const active = await tx.query(
@@ -161,7 +167,7 @@ export async function startAccountOperation(
         accountId,
         kind,
         "queued",
-        "{}",
+        JSON.stringify({ method }),
         a.epoch,
         "等待发布执行器",
         now,
@@ -345,21 +351,26 @@ export async function createBatch(
 export async function operationDetail(
   token: string | undefined,
   operationId: string,
+  knownImageHash?: string,
 ) {
   await requireOwner(token);
   const [op] = await db.query(
-    "SELECT id,kind,state,detail,image_data,updated_at,account_id FROM publishing_operations WHERE owner_id=$1 AND id=$2",
+    "SELECT id,kind,state,detail,image_data,updated_at,account_id,payload FROM publishing_operations WHERE owner_id=$1 AND id=$2",
     [owner, identifier(operationId)],
   );
   if (!op) throw new AppError(404, "任务不存在");
+  const imageHash = op.image_data ? createHash("sha256").update(op.image_data).digest("hex") : null;
   return {
     id: op.id,
     kind: op.kind,
     state: op.state,
     detail: op.detail,
-    image: op.image_data,
+    image: imageHash && imageHash === knownImageHash ? undefined : op.image_data,
+    imageHash,
     updatedAt: op.updated_at,
     accountId: op.account_id,
+    loginMethod: op.kind === "login" ? JSON.parse(op.payload).method ?? "qr" : null,
+    identityChallenge: op.kind === "login" && op.state === "waiting_verification" ? JSON.parse(op.payload).challenge ?? null : null,
   };
 }
 export async function controlOperation(
@@ -376,6 +387,21 @@ export async function controlOperation(
     if (!op) throw new AppError(404, "任务不存在");
     const now = stamp(),
       action = body.action;
+    const challenge = op.kind === "login" ? JSON.parse(op.payload).challenge : null;
+    if (challenge && ["login_method", "refresh_qr", "login_password", "login_sms", "request_sms", "sms_code"].includes(String(action)))
+      throw new AppError(409, "请先完成当前追加身份验证，或关闭窗口放弃本次登录");
+    if (action === "close_login") {
+      if (op.kind !== "login") throw new AppError(400, "此操作仅用于关闭登录窗口");
+      // Closing is idempotent, works without a live worker, and fences late login results.
+      // A concurrent successful confirmation wins if it committed first.
+      if (!["queued", "running", "waiting_scan", "waiting_verification", "awaiting_identity"].includes(op.state))
+        return { ok: true, abandoned: false };
+      await tx.query(
+        "UPDATE publishing_operations SET state='cancelled',detail='登录窗口已关闭，已放弃本次登录',pending_credential=NULL,image_data=NULL,control_ciphertext=NULL,lease_token=NULL,lease_until=NULL,updated_at=$3 WHERE owner_id=$1 AND id=$2",
+        [owner, op.id, now],
+      );
+      return { ok: true, abandoned: true };
+    }
     if (action === "resolve_submitted" || action === "resolve_not_published") {
       if (op.state !== "unknown" || body.confirmed !== true)
         throw new AppError(409, "请先到抖音核实后明确确认");
@@ -415,15 +441,16 @@ export async function controlOperation(
       if (
         op.state !== "awaiting_identity" ||
         !op.pending_credential ||
-        body.confirmed !== true
+        body.confirmed !== true || Date.parse(op.updated_at) + 600000 <= Date.now()
       )
         throw new AppError(409, "请核对当前账号页面后确认");
       const credential = unseal(
         op.pending_credential,
         owner + ":pending:" + op.id,
       );
+      validateCredential(credential);
       await tx.query(
-        "UPDATE publishing_accounts SET credential_ciphertext=$3,state='ready',epoch=epoch+1,identity_confirmed_at=$4,updated_at=$4 WHERE owner_id=$1 AND id=$2",
+        "UPDATE publishing_accounts SET credential_ciphertext=$3,state='ready',epoch=epoch+1,identity_confirmed_at=$4,updated_at=$4,last_checked_at=$4,session_saved_at=$4 WHERE owner_id=$1 AND id=$2",
         [
           owner,
           op.account_id,
@@ -439,6 +466,23 @@ export async function controlOperation(
     } else if (action === "confirm_publish") {
       if (op.state !== "awaiting_publish" || body.confirmed !== true)
         throw new AppError(409, "请先核对实际发布页面");
+    } else if (["identity_receive_sms", "identity_request_sms", "identity_code", "identity_face", "identity_send_sms"].includes(String(action))) {
+      const capability: Record<string, string> = { identity_receive_sms: "receiveSms", identity_request_sms: "requestSms", identity_code: "submitCode", identity_face: "face", identity_send_sms: "sendSms" };
+      if (op.kind !== "login" || op.state !== "waiting_verification" || challenge?.[capability[String(action)]] !== true)
+        throw new AppError(409, "当前身份验证方式不可用，请等待页面更新");
+      if (body.confirmed !== true) throw new AppError(400, "请确认由本人操作当前账号的身份验证");
+      if (action === "identity_code" && (typeof body.code !== "string" || !/^\d{4,8}$/.test(body.code))) throw new AppError(400, "请输入有效身份验证码");
+    } else if (["login_method", "refresh_qr", "login_password", "login_sms"].includes(String(action))) {
+      if (op.kind !== "login" || !["waiting_scan", "waiting_verification"].includes(op.state))
+        throw new AppError(409, "当前任务不能执行登录操作");
+      if (action === "login_method" && !["qr", "sms", "password"].includes(String(body.method)))
+        throw new AppError(400, "登录方式无效");
+      if (["login_password", "login_sms"].includes(String(action))) {
+        if (body.confirmed !== true) throw new AppError(400, "请确认同意抖音登录协议");
+        if (typeof body.phone !== "string" || !/^1\d{10}$/.test(body.phone)) throw new AppError(400, "请输入11位中国大陆手机号");
+        if (action === "login_password" && (typeof body.password !== "string" || !body.password || body.password.length > 128)) throw new AppError(400, "请输入有效密码");
+        if (action === "login_sms" && (typeof body.code !== "string" || !/^\d{4,8}$/.test(body.code))) throw new AppError(400, "请输入有效验证码");
+      }
     } else if (action === "sms_code") {
       if (
         op.state !== "waiting_verification" ||
@@ -447,8 +491,11 @@ export async function controlOperation(
       )
         throw new AppError(400, "当前验证码无效");
     } else if (action === "request_sms") {
+      if (op.kind === "login" && body.confirmed !== true) throw new AppError(400, "请确认同意抖音登录协议");
       if (op.state !== "waiting_verification")
         throw new AppError(409, "当前没有等待短信验证");
+      if (op.kind === "login" && (typeof body.phone !== "string" || !/^1\d{10}$/.test(body.phone)))
+        throw new AppError(400, "请输入11位中国大陆手机号");
     } else throw new AppError(400, "不支持的操作");
     if (op.state === "awaiting_identity" && action === "cancel") {
       await tx.query(
@@ -459,7 +506,10 @@ export async function controlOperation(
     }
     if (!op.lease_until || op.lease_until <= now)
       throw new AppError(409, "执行器已离线，请刷新任务状态");
-    if (op.control_ciphertext) throw new AppError(409, "上一步操作正在处理");
+    if (op.control_ciphertext) {
+      const old = unseal<{ expiresAt: number }>(op.control_ciphertext, owner + ":control:" + op.id);
+      if (old.expiresAt > Date.now()) throw new AppError(409, "上一步操作正在处理");
+    }
     await tx.query(
       "UPDATE publishing_operations SET control_ciphertext=$3,updated_at=$4 WHERE owner_id=$1 AND id=$2",
       [
@@ -468,7 +518,10 @@ export async function controlOperation(
         seal(
           {
             action,
-            ...(action === "sms_code" ? { code: body.code } : {}),
+            ...(["sms_code", "login_sms", "identity_code"].includes(String(action)) ? { code: body.code } : {}),
+            ...(["request_sms", "login_sms", "login_password"].includes(String(action)) && op.kind === "login" ? { phone: body.phone } : {}),
+            ...(action === "login_password" ? { password: body.password } : {}),
+            ...(action === "login_method" ? { method: body.method } : {}),
             expiresAt: Date.now() + 60000,
           },
           owner + ":control:" + op.id,
@@ -476,6 +529,8 @@ export async function controlOperation(
         now,
       ],
     );
+    if (action === "login_method") await tx.query("UPDATE publishing_operations SET payload=$3 WHERE owner_id=$1 AND id=$2", [owner, op.id, JSON.stringify({ method: body.method })]);
+    if (action === "refresh_qr") await tx.query("UPDATE publishing_operations SET payload=$3 WHERE owner_id=$1 AND id=$2", [owner, op.id, JSON.stringify({ method: "qr" })]);
     return { ok: true };
   });
 }

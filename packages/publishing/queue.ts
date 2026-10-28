@@ -8,8 +8,9 @@ export interface ClaimedOperation extends Row {
   lease_token: string;
   account: Row;
 }
-import { OWNER_ID, seal, unseal, safeImage } from "./security";
+import { OWNER_ID, seal, unseal, safeImage, enabled, validateCredential } from "./security";
 import { stamp } from "./service";
+import { loginStageLabels, type LoginStage } from "./login-errors";
 const owner = OWNER_ID;
 const until = () => new Date(Date.now() + 30000).toISOString();
 // One lease per owner intentionally serializes first-version browser work, even across multiple worker processes.
@@ -58,7 +59,7 @@ export async function claim(
     );
     if (live.length) return null;
     const [op] = await tx.query<ClaimedOperation>(
-      "SELECT o.* FROM publishing_operations o WHERE o.owner_id=$1 AND o.state='queued' AND NOT EXISTS(SELECT 1 FROM publishing_operations p WHERE p.owner_id=o.owner_id AND p.account_id=o.account_id AND p.state IN ('unknown','awaiting_identity')) ORDER BY o.created_at,o.id LIMIT 1",
+      `SELECT o.* FROM publishing_operations o WHERE o.owner_id=$1 AND o.state='queued' ${enabled() ? "" : "AND o.kind<>'publish'"} AND NOT EXISTS(SELECT 1 FROM publishing_operations p WHERE p.owner_id=o.owner_id AND p.account_id=o.account_id AND p.state IN ('unknown','awaiting_identity')) ORDER BY o.created_at,o.id LIMIT 1`,
       [owner],
     );
     if (!op) return null;
@@ -119,7 +120,7 @@ export async function consumeControl(operationId: string, lease: string) {
       "UPDATE publishing_operations SET control_ciphertext=NULL WHERE owner_id=$1 AND id=$2 AND lease_token=$3",
       [owner, operationId, lease],
     );
-    const value = unseal<{ action: string; code?: string; expiresAt: number }>(
+    const value = unseal<{ action: string; code?: string; phone?: string; password?: string; method?: string; expiresAt: number }>(
       op.control_ciphertext,
       owner + ":control:" + operationId,
     );
@@ -137,6 +138,14 @@ export async function event(
   lease: string,
   value: Record<string, unknown>,
 ) {
+  if (value.type === "progress") {
+    const phase = String(value.phase);
+    if (!Object.prototype.hasOwnProperty.call(loginStageLabels, phase)) throw new Error("Invalid login phase");
+    const changed = await db.query("UPDATE publishing_operations SET detail=$4,updated_at=$5 WHERE owner_id=$1 AND id=$2 AND lease_token=$3 AND lease_until>$5 AND kind IN ('login','check') AND state='running' RETURNING id",
+      [owner, operationId, lease, loginStageLabels[phase as LoginStage], stamp()]);
+    if (!changed.length) throw new Error("Lost login progress lease");
+    return;
+  }
   const states: Record<string, string> = {
     qr: "waiting_scan",
     verification: "waiting_verification",
@@ -165,7 +174,7 @@ export async function event(
   };
   return db.transaction(null, async (tx) => {
     const [op] = await tx.query(
-      "SELECT kind,state,submission_authorized FROM publishing_operations WHERE owner_id=$1 AND id=$2 AND lease_token=$3 AND lease_until>$4",
+      "SELECT kind,state,submission_authorized,payload FROM publishing_operations WHERE owner_id=$1 AND id=$2 AND lease_token=$3 AND lease_until>$4",
       [owner, operationId, lease, stamp()],
     );
     if (!op) throw new Error("Lost operation lease");
@@ -180,9 +189,18 @@ export async function event(
       throw new Error("Invalid event transition");
     const changed = await tx.query(
       "UPDATE publishing_operations SET state=$4,detail=$5,image_data=COALESCE($6,image_data),updated_at=$7 WHERE owner_id=$1 AND id=$2 AND lease_token=$3 AND lease_until>$7 RETURNING id",
-      [owner, operationId, lease, states[kind], labels[kind], image, stamp()],
+      [owner, operationId, lease, states[kind], typeof value.detail === "string" ? value.detail.slice(0, 300) : labels[kind], image, stamp()],
     );
     if (!changed.length) throw new Error("Lost operation lease");
+    if (op.kind === "login") {
+      const raw = value.challenge as Record<string, unknown> | null;
+      const challenge = raw && ["choose", "sms", "manual"].includes(String(raw.stage)) ? {
+        stage: raw.stage, receiveSms: raw.receiveSms === true, requestSms: raw.requestSms === true,
+        submitCode: raw.submitCode === true, face: raw.face === true, sendSms: raw.sendSms === true,
+      } : null;
+      const payload = { ...JSON.parse(op.payload), challenge };
+      await tx.query("UPDATE publishing_operations SET payload=$3 WHERE owner_id=$1 AND id=$2", [owner, operationId, JSON.stringify(payload)]);
+    }
   });
 }
 export async function finish(
@@ -193,6 +211,7 @@ export async function finish(
     detail: string;
     credential?: unknown;
     image?: string;
+    checkStatus?: "expired" | "verification_required" | "check_failed";
   },
 ) {
   return db.transaction(null, async (tx) => {
@@ -225,19 +244,24 @@ export async function finish(
     if (op.kind === "login" && result.state === "awaiting_identity") {
       if (!result.credential || !result.image)
         throw new Error("Login evidence missing");
-      pending = seal(result.credential, owner + ":pending:" + operationId);
+      pending = seal(validateCredential(result.credential), owner + ":pending:" + operationId);
       image = safeImage(result.image);
     }
     if (op.kind === "check") {
+      if (result.state === "submitted") validateCredential(result.credential);
       await tx.query(
-        "UPDATE publishing_accounts SET state=$3,updated_at=$4 WHERE owner_id=$1 AND id=$2",
+        "UPDATE publishing_accounts SET state=$3,updated_at=$4,last_checked_at=$4 WHERE owner_id=$1 AND id=$2",
         [
           owner,
           op.account_id,
-          result.state === "submitted" ? "ready" : "expired",
+          result.state === "submitted" ? "ready" : result.checkStatus ?? "check_failed",
           stamp(),
         ],
       );
+      if (result.state === "submitted" && result.credential) {
+        const credential = validateCredential(result.credential);
+        await tx.query("UPDATE publishing_accounts SET credential_ciphertext=$3,session_saved_at=$4 WHERE owner_id=$1 AND id=$2", [owner, op.account_id, seal(credential, owner + ":account:" + op.account_id), stamp()]);
+      }
     }
     await tx.query(
       "UPDATE publishing_operations SET state=$4,detail=$5,pending_credential=$6,image_data=$7,control_ciphertext=NULL,lease_token=NULL,lease_until=NULL,updated_at=$8 WHERE owner_id=$1 AND id=$2 AND lease_token=$3",

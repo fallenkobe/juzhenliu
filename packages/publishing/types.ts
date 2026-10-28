@@ -11,6 +11,14 @@ export type OperationState =
   | "unknown"
   | "cancelled";
 export type OperationKind = "login" | "check" | "publish";
+export interface IdentityChallenge {
+  stage: "choose" | "sms" | "manual";
+  receiveSms: boolean;
+  requestSms: boolean;
+  submitCode: boolean;
+  face: boolean;
+  sendSms: boolean;
+}
 export interface PublishingAccount {
   id: string;
   label: string;
@@ -18,6 +26,8 @@ export interface PublishingAccount {
   state: string;
   epoch: number;
   identity_confirmed_at: string | null;
+  last_checked_at: string | null;
+  session_saved_at: string | null;
   created_at: string;
   updated_at: string;
 }

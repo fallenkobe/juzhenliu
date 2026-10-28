@@ -9,6 +9,7 @@ Object.assign(process.env, {
   MATRIX_OWNER_PASSWORD: "publishing-test-password-not-a-real-secret",
   MATRIX_PUBLISHING_KEY: "a".repeat(64),
   MATRIX_PUBLISHING_ENABLED: "1",
+  MATRIX_PUBLISHING_LOGIN_ENABLED: "0",
   NODE_ENV: "test",
 });
 delete process.env.MATRIX_PUBLIC_ORIGIN;
@@ -383,6 +384,33 @@ test("image protocol rejects URLs and non-PNG payloads", () => {
   assert.throws(() => security.safeImage("data:image/png;base64,YmFk"));
   assert.equal(security.safeImage(png), png);
 });
+
+test("detail polling omits unchanged previews but delivers state changes and clears removed images", async () => {
+  const aid = await account();
+  const { operationId } = await service.startAccountOperation(token, aid, "login", { consent: true });
+  const op = (await queue.claim("worker"))!;
+  await queue.event(op.id, op.lease_token, { type: "qr", image: png });
+  const first = await service.operationDetail(token, operationId);
+  assert.equal(first.image, png);
+  assert.ok(first.imageHash);
+  const challenge = { stage: "sms", submitCode: true };
+  await queue.event(op.id, op.lease_token, { type: "verification", challenge });
+  const response = await handlePublishingRequest(new Request("http://localhost/api/publishing/operations/" + op.id, {
+    headers: { "X-Matrix-Image-Hash": first.imageHash! },
+  }), ["operations", op.id], token);
+  const next = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(Object.hasOwn(next, "image"), false);
+  assert.equal(next.imageHash, first.imageHash);
+  assert.equal(next.identityChallenge.submitCode, true);
+  assert.equal(next.state, "waiting_verification");
+  await assert.rejects(() => service.operationDetail(undefined, op.id, first.imageHash!), /登录/);
+  assert.equal((await service.operationDetail(token, op.id, "stale-hash")).image, png);
+  await service.controlOperation(token, op.id, { action: "close_login" });
+  const closed = await service.operationDetail(token, op.id, first.imageHash!);
+  assert.equal(closed.image, null);
+  assert.equal(closed.imageHash, null);
+});
 test("same worker cannot claim two live operations and terminal transitions are fenced", async () => {
   await batch([await account("A", true), await account("B", true)]);
   const op = (await queue.claim("worker"))!;
@@ -451,32 +479,35 @@ test("runner fails closed when upstream is not configured", async () => {
   assert.equal((await service.operationDetail(token, op.id)).state, "failed");
 });
 test("synthetic subprocess protocol fences submit acknowledgement and records submitted", async () => {
-  const { writeFile, chmod } = await import("node:fs/promises");
+  const { writeFile } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
   const { runOperation } = await import("../packages/publishing/runner");
-  const executable = resolve(process.env.MATRIX_DATA_DIR!, "synthetic-bridge");
+  const executable = resolve(process.env.MATRIX_DATA_DIR!, "synthetic-bridge.mjs");
   await writeFile(
     executable,
-    `#!/usr/bin/env python3
-import sys,json
-json.loads(sys.stdin.readline())
-print(json.dumps({'type':'preview'}),flush=True)
-assert json.loads(sys.stdin.readline())['action']=='confirm_publish'
-print(json.dumps({'type':'submitting'}),flush=True)
-assert json.loads(sys.stdin.readline())['action']=='submit_ack'
-print(json.dumps({'type':'result','state':'submitted','detail':'synthetic protocol only'}),flush=True)
+    `import { createInterface } from 'node:readline';
+let step = 0;
+const lines = createInterface({input:process.stdin});
+lines.on('line', line => {
+ const v = JSON.parse(line);
+ if (step++ === 0) console.log(JSON.stringify({type:'preview'}));
+ else if (v.action === 'confirm_publish') console.log(JSON.stringify({type:'submitting'}));
+ else if (v.action === 'submit_ack') { console.log(JSON.stringify({type:'result',state:'submitted',detail:'synthetic protocol only'})); lines.close(); process.stdin.destroy(); }
+ else process.exit(1);
+});
 `,
   );
-  await chmod(executable, 0o700);
   process.env.MATRIX_PUBLISHING_PYTHON = executable;
   process.env.MATRIX_SAU_ROOT = "/synthetic-not-upstream";
   try {
     await batch([await account("A", true)]);
     const op = (await queue.claim("worker"))!;
-    const running = runOperation(op, "worker");
+    const running = runOperation(op, "worker", ((_file: any, _args: any, options: any) => spawn(process.execPath, [executable], options)) as typeof spawn);
+    const deadline = Date.now() + 10000;
     while (
       (await service.operationDetail(token, op.id)).state !== "awaiting_publish"
     )
-      await new Promise((r) => setTimeout(r, 10));
+      { assert.ok(Date.now() < deadline, "synthetic child did not reach preview"); await new Promise((r) => setTimeout(r, 10)); }
     await service.controlOperation(token, op.id, {
       action: "confirm_publish",
       confirmed: true,
@@ -490,4 +521,153 @@ print(json.dumps({'type':'result','state':'submitted','detail':'synthetic protoc
     delete process.env.MATRIX_PUBLISHING_PYTHON;
     delete process.env.MATRIX_SAU_ROOT;
   }
+});
+
+test("login-only mode claims login but never queued publishing", async () => {
+  await batch([await account("publish", true)]);
+  process.env.MATRIX_PUBLISHING_ENABLED = "0";
+  process.env.MATRIX_PUBLISHING_LOGIN_ENABLED = "1";
+  try {
+    assert.equal(await queue.claim("worker"), null);
+    const aid = await account("login");
+    const { operationId } = await service.startAccountOperation(token, aid, "login", { consent: true, method: "password" });
+    assert.equal((await queue.claim("worker"))?.id, operationId);
+  } finally { process.env.MATRIX_PUBLISHING_ENABLED = "1"; process.env.MATRIX_PUBLISHING_LOGIN_ENABLED = "0"; }
+});
+
+test("password and SMS controls are terms gated, encrypted, single-use and never returned", async () => {
+  const aid = await account();
+  const { operationId } = await service.startAccountOperation(token, aid, "login", { consent: true, method: "password" });
+  const op = (await queue.claim("worker"))!;
+  await queue.event(op.id, op.lease_token, { type: "verification", image: png });
+  const input = { action: "login_password", phone: "13800000000", password: "synthetic-password-only" };
+  await assert.rejects(() => service.controlOperation(token, operationId, input), /协议/);
+  await service.controlOperation(token, operationId, { ...input, confirmed: true });
+  const [stored] = await db.query("SELECT payload,control_ciphertext FROM publishing_operations WHERE id=$1", [op.id]);
+  assert.ok(!JSON.stringify(stored).includes(input.password));
+  assert.ok(!JSON.stringify(await service.operationDetail(token, op.id)).includes(input.phone));
+  const control = await queue.consumeControl(op.id, op.lease_token);
+  assert.equal(control?.password, input.password);
+  assert.equal(await queue.consumeControl(op.id, op.lease_token), null);
+  await service.controlOperation(token, op.id, { action: "login_sms", phone: input.phone, code: "123456", confirmed: true });
+  assert.equal((await queue.consumeControl(op.id, op.lease_token))?.code, "123456");
+  await service.controlOperation(token, op.id, { action: "refresh_qr" });
+  assert.equal((await service.operationDetail(token, op.id)).loginMethod, "qr");
+});
+
+test("expired identity confirmation cannot persist session", async () => {
+  const aid = await account();
+  await service.startAccountOperation(token, aid, "login", { consent: true });
+  const op = (await queue.claim("worker"))!;
+  await queue.finish(op.id, op.lease_token, { state: "awaiting_identity", credential: state, image: png, detail: "fixture" });
+  await db.query("UPDATE publishing_operations SET updated_at=$2 WHERE id=$1", [op.id, new Date(Date.now()-601000).toISOString()]);
+  await assert.rejects(() => service.controlOperation(token, op.id, { action: "confirm_identity", confirmed: true }));
+  const [row] = await db.query("SELECT credential_ciphertext FROM publishing_accounts WHERE id=$1", [aid]);
+  assert.equal(row.credential_ciphertext, null);
+});
+
+test("session checks rotate encrypted credentials; network failure preserves them", async () => {
+  const aid = await account("saved", true);
+  await service.startAccountOperation(token, aid, "check", {});
+  let op = (await queue.claim("worker"))!;
+  const rotated = { ...state, cookies: [{ ...state.cookies[0], value: "rotated-synthetic-only" }] };
+  await queue.finish(op.id, op.lease_token, { state: "submitted", credential: rotated, detail: "fixture" });
+  let [row] = await db.query("SELECT * FROM publishing_accounts WHERE id=$1", [aid]);
+  assert.equal(row.state, "ready");
+  assert.ok(row.last_checked_at && row.session_saved_at);
+  assert.deepEqual(security.unseal(row.credential_ciphertext, security.OWNER_ID + ":account:" + aid), rotated);
+  const ciphertext = row.credential_ciphertext;
+  await service.startAccountOperation(token, aid, "check", {});
+  op = (await queue.claim("worker"))!;
+  await queue.finish(op.id, op.lease_token, { state: "failed", checkStatus: "check_failed", detail: "network fixture" });
+  [row] = await db.query("SELECT * FROM publishing_accounts WHERE id=$1", [aid]);
+  assert.equal(row.state, "check_failed");
+  assert.equal(row.credential_ciphertext, ciphertext);
+});
+
+test("credential validation excludes foreign origins and empty sessions", () => {
+  assert.throws(() => security.validateCredential({ cookies: [], origins: [] }));
+  assert.throws(() => security.validateCredential({ ...state, origins: [{ origin: "https://evil.test" }] }));
+  assert.throws(() => security.validateCredential({ ...state, cookies: [{ ...state.cookies[0], domain: "evildouyin.com" }] }));
+});
+
+test("closing login fences late results and clears pending secrets even without a live worker", async () => {
+  const aid = await account("existing", true);
+  const [before] = await db.query("SELECT credential_ciphertext FROM publishing_accounts WHERE id=$1", [aid]);
+  const { operationId } = await service.startAccountOperation(token, aid, "login", { consent: true });
+  const op = (await queue.claim("worker"))!;
+  await queue.event(op.id, op.lease_token, { type: "verification", image: png });
+  await service.controlOperation(token, op.id, { action: "login_password", phone: "13800000000", password: "fixture-only", confirmed: true });
+  await db.query("UPDATE publishing_operations SET lease_until=$2 WHERE id=$1", [op.id, new Date(0).toISOString()]);
+  assert.deepEqual(await service.controlOperation(token, operationId, { action: "close_login" }), { ok: true, abandoned: true });
+  assert.equal(await queue.heartbeat("worker", op.id, op.lease_token), false);
+  assert.equal(await queue.finish(op.id, op.lease_token, { state: "awaiting_identity", credential: state, image: png, detail: "late result" }), false);
+  const [closed] = await db.query("SELECT * FROM publishing_operations WHERE id=$1", [op.id]);
+  assert.equal(closed.state, "cancelled");
+  for (const key of ["pending_credential", "image_data", "control_ciphertext", "lease_token", "lease_until"]) assert.equal(closed[key], null);
+  const [after] = await db.query("SELECT credential_ciphertext FROM publishing_accounts WHERE id=$1", [aid]);
+  assert.equal(after.credential_ciphertext, before.credential_ciphertext);
+  assert.deepEqual(await service.controlOperation(token, operationId, { action: "close_login" }), { ok: true, abandoned: false });
+});
+
+test("closing queued or awaiting-identity login abandons it; closing saved login preserves it", async () => {
+  for (const phase of ["queued", "awaiting_identity", "submitted"]) {
+    const aid = await account(phase);
+    const { operationId } = await service.startAccountOperation(token, aid, "login", { consent: true });
+    if (phase !== "queued") {
+      const op = (await queue.claim("worker"))!;
+      await queue.finish(op.id, op.lease_token, { state: "awaiting_identity", credential: state, image: png, detail: "fixture" });
+      if (phase === "submitted") await service.controlOperation(token, op.id, { action: "confirm_identity", confirmed: true });
+    }
+    await service.controlOperation(token, operationId, { action: "close_login" });
+    assert.equal((await service.operationDetail(token, operationId)).state, phase === "submitted" ? "submitted" : "cancelled");
+    const [row] = await db.query("SELECT credential_ciphertext FROM publishing_accounts WHERE id=$1", [aid]);
+    assert.equal(Boolean(row.credential_ciphertext), phase === "submitted");
+  }
+});
+
+test("identity verification capabilities gate encrypted commands and block ordinary login controls", async () => {
+  const aid = await account();
+  await service.startAccountOperation(token, aid, "login", { consent: true });
+  const op = (await queue.claim("worker"))!;
+  await assert.rejects(() => service.controlOperation(token, op.id, { action: "identity_receive_sms", confirmed: true }));
+  await queue.event(op.id, op.lease_token, { type: "verification", image: png, challenge: { stage: "choose", receiveSms: true, face: true, sendSms: true, secret: "must-not-escape" } });
+  const detail = await service.operationDetail(token, op.id);
+  assert.equal(detail.identityChallenge.receiveSms, true);
+  assert.equal(JSON.stringify(detail).includes("must-not-escape"), false);
+  await assert.rejects(() => service.controlOperation(token, op.id, { action: "identity_receive_sms" }), /本人/);
+  await assert.rejects(() => service.controlOperation(token, op.id, { action: "refresh_qr" }), /追加身份验证/);
+  await service.controlOperation(token, op.id, { action: "identity_receive_sms", confirmed: true });
+  assert.equal((await queue.consumeControl(op.id, op.lease_token))?.action, "identity_receive_sms");
+  await queue.event(op.id, op.lease_token, { type: "verification", challenge: { stage: "sms", submitCode: true, requestSms: true } });
+  await service.controlOperation(token, op.id, { action: "identity_code", code: "123456", confirmed: true });
+  const [stored] = await db.query("SELECT control_ciphertext,payload FROM publishing_operations WHERE id=$1", [op.id]);
+  assert.equal(JSON.stringify(stored).includes("123456"), false);
+  assert.equal((await queue.consumeControl(op.id, op.lease_token))?.code, "123456");
+  assert.equal(await queue.consumeControl(op.id, op.lease_token), null);
+  await service.controlOperation(token, op.id, { action: "close_login" });
+  assert.equal((await service.operationDetail(token, op.id)).identityChallenge, null);
+});
+
+test("login error messages identify stage without leaking browser diagnostics", async () => {
+  const { LoginBrowserError, loginFailure } = await import("../packages/publishing/login-errors");
+  const failure = loginFailure(new LoginBrowserError("page_open", new Error("page.goto: net::ERR_CONNECTION_CLOSED https://private.test/?token=synthetic-secret")));
+  assert.match(failure.detail, /LOGIN_PAGE_OPEN/);
+  assert.match(failure.detail, /ERR_CONNECTION_CLOSED/);
+  assert.equal(failure.detail.includes("synthetic-secret"), false);
+  assert.equal(failure.detail.includes("private.test"), false);
+  assert.match(loginFailure(new LoginBrowserError("screenshot")).detail, /LOGIN_SCREENSHOT/);
+});
+
+test("startup progress updates a live login without changing state or accepting late events", async () => {
+  const aid = await account();
+  await service.startAccountOperation(token, aid, "login", { consent: true });
+  const op = (await queue.claim("worker"))!;
+  await queue.event(op.id, op.lease_token, { type: "progress", phase: "page_open", detail: "untrusted-secret" });
+  const detail = await service.operationDetail(token, op.id);
+  assert.equal(detail.state, "running");
+  assert.match(detail.detail, /浏览器已启动/);
+  assert.equal(detail.detail.includes("untrusted-secret"), false);
+  await service.controlOperation(token, op.id, { action: "close_login" });
+  await assert.rejects(() => queue.event(op.id, op.lease_token, { type: "progress", phase: "session_read" }));
 });

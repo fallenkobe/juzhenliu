@@ -88,7 +88,7 @@ export async function handlePublishingRequest(
       return json(await service.createBatch(token, await body(req)), 202);
     if (parts[0] === "operations" && parts.length === 2) {
       if (req.method === "GET")
-        return json(await service.operationDetail(token, parts[1]));
+        return json(await service.operationDetail(token, parts[1], req.headers.get("X-Matrix-Image-Hash") || undefined));
       if (req.method === "POST")
         return json(
           await service.controlOperation(token, parts[1], await body(req)),

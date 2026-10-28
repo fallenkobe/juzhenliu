@@ -110,6 +110,10 @@
   max-height: 90vh;
   overflow: auto;
 }
+.pc-dialog .pc-form { grid-template-columns: 1fr; }
+.pc-dialog label:not(.pc-check) { display: flex; flex-direction: column; gap: 8px; }
+.pc-dialog button:disabled { opacity: 0.45; cursor: not-allowed; }
+.pc-dialog .muted { line-height: 1.7; }
 .pc-browser {
   display: block;
   width: 100%;

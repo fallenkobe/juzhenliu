@@ -21,7 +21,7 @@ before(async()=>{await db.migrate();owner=await auth.loginOwner(process.env.MATR
 after(async()=>{await db.close();if(path.dirname(directory)===path.resolve('.data')&&path.basename(directory).startsWith('test-oauth-'))rmSync(directory,{recursive:true,force:true});});
 
 test('OAuth migration upgrades idempotently and keeps original schema',async()=>{
-  await db.migrate();const versions=await db.query('SELECT version FROM schema_migrations');assert.deepEqual(versions.map(v=>v.version).sort(),['001_alpha','002_douyin_oauth','003_video_analytics','004_managed_accounts','005_account_works','006_video_query_snapshots','007_publishing']);
+  await db.migrate();const versions=await db.query('SELECT version FROM schema_migrations');assert.deepEqual(versions.map(v=>v.version).sort(),['001_alpha','002_douyin_oauth','003_video_analytics','004_managed_accounts','005_account_works','006_video_query_snapshots','007_publishing','008_publishing_login']);
   await db.query('SELECT id FROM accounts LIMIT 1');
 });
 test('configuration blocks incomplete keys, unsafe callbacks and weak owner passwords',()=>{
